@@ -268,8 +268,8 @@ denollama/
 
 ## Roadmap
 - [x] Streaming responses
-- [ ] Frontend-specific tests
 - [x] MathJax support
+- [ ] Frontend-specific tests
 - [ ] Markdown sanitization
 - [ ] Export chat as JSON/Markdown
 - [ ] Optional system prompt injection
