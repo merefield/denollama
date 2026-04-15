@@ -649,7 +649,8 @@ function Sidebar(
   return html`
     <aside class="sidebar">
       <div class="sidebar-header">
-        <h2>LLM Chat</h2>
+        <h2>Denollama</h2>
+        <p class="sidebar-subtitle">Lightweight LLM Chat Interface</p>
       </div>
 
       <div class="model-selector">
