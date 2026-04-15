@@ -252,6 +252,31 @@ Deno.test('POST /api/v1/response builds messages with context and defaults', asy
   });
 });
 
+Deno.test('POST /api/v1/response prepends system prompt when provided', async () => {
+  const client = new FakeOllamaClient();
+  const app = createApp({ client });
+
+  const response = await makeRequest(app, '/api/v1/response', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: 'Solve this',
+      model: 'llama2',
+      system_prompt: 'Use display math for derivations.',
+      context: [
+        { role: 'assistant', content: 'Ready.' },
+      ],
+    }),
+  });
+
+  await assertJson(response, 200);
+  assertEquals(client.chatCalls[0].messages, [
+    { role: 'system', content: 'Use display math for derivations.' },
+    { role: 'assistant', content: 'Ready.' },
+    { role: 'user', content: 'Solve this' },
+  ]);
+});
+
 Deno.test('POST /api/v1/response streams NDJSON when requested', async () => {
   const client = new FakeOllamaClient();
   const app = createApp({ client });

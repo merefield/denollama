@@ -271,9 +271,9 @@ denollama/
 - [x] MathJax support
 - [x] Delete chats from history
 - [x] Export chat as JSON/Markdown
+- [x] Optional system prompt injection
 - [ ] Frontend-specific tests
 - [ ] Markdown sanitization
-- [ ] Optional system prompt injection
 - [ ] Simple theming (dark/light toggle)
 
 ---

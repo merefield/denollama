@@ -120,6 +120,9 @@ async function handleResponseRequest(
   const prompt = typeof data.prompt === 'string' ? data.prompt : undefined;
   const model = typeof data.model === 'string' ? data.model : undefined;
   const context = Array.isArray(data.context) ? data.context : [];
+  const systemPrompt = typeof data.system_prompt === 'string'
+    ? data.system_prompt.trim()
+    : '';
   const stream = data.stream === true;
 
   if (!prompt) {
@@ -139,6 +142,13 @@ async function handleResponseRequest(
         : '',
     };
   });
+
+  if (systemPrompt) {
+    messages.unshift({
+      role: 'system',
+      content: systemPrompt,
+    });
+  }
 
   messages.push({
     role: 'user',

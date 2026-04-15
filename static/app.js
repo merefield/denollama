@@ -14,11 +14,29 @@ import { marked } from './vendor/marked.esm.js';
 const API_KEY_STORAGE_KEY = 'llm-api-key';
 const CHAT_STORAGE_KEY = 'llm-chats';
 const STREAMING_STORAGE_KEY = 'llm-streaming-enabled';
+const SYSTEM_PROMPT_STORAGE_KEY = 'llm-system-prompt';
 const html = htm.bind(h);
 const MATH_PLACEHOLDER_PREFIX = '@@MATHJAX_PLACEHOLDER_';
 const DISPLAY_MATH_PATTERN = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]/g;
+const DISPLAY_ENV_NAMES =
+  'align\\*?|aligned|array|bmatrix|Bmatrix|cases|matrix|pmatrix|smallmatrix|vmatrix|Vmatrix|gather\\*?|gathered|equation\\*?|multline\\*?';
+const SELF_DISPLAY_ENV_NAMES =
+  'align\\*?|gather\\*?|equation\\*?|multline\\*?';
+const BARE_DISPLAY_ENV_PATTERN = new RegExp(
+  String.raw`\\begin\{(${DISPLAY_ENV_NAMES})\}(?:\{[^{}]*\})?[\s\S]+?\\end\{\1\}`,
+  'g',
+);
 const INLINE_MATH_PATTERN =
   /\\\([\s\S]+?\\\)|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$/g;
+const DEFAULT_SYSTEM_PROMPT = `Be concise, technically accurate, and use clean Markdown.
+
+For math:
+- Use inline math only for short expressions inside sentences.
+- Put full equations, derivations, systems of equations, and multi-line working in display math using \\[ ... \\] or $$ ... $$.
+- Do not emit bare TeX environments like \\begin{aligned}...\\end{aligned} or \\begin{array}...\\end{array}; wrap them in display math.
+- Put each display equation or derivation block on its own line.
+
+When asked to solve something, show the working clearly step by step.`;
 const COPY_BUTTON_ICON = `
   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
     <path d="M9 9h9v11H9z"></path>
@@ -94,6 +112,15 @@ function readStreamingPreference() {
 
 function writeStreamingPreference(enabled) {
   localStorage.setItem(STREAMING_STORAGE_KEY, String(enabled));
+}
+
+function readSystemPrompt() {
+  const stored = localStorage.getItem(SYSTEM_PROMPT_STORAGE_KEY);
+  return stored && stored.trim() ? stored : DEFAULT_SYSTEM_PROMPT;
+}
+
+function writeSystemPrompt(prompt) {
+  localStorage.setItem(SYSTEM_PROMPT_STORAGE_KEY, prompt);
 }
 
 function readChatsFromStorage() {
@@ -231,14 +258,22 @@ function stripMathDelimiters(expression) {
   return trimmed;
 }
 
-function isDisplayMathEnvironment(content) {
-  return /\\begin\{(?:align\*?|aligned|array|bmatrix|Bmatrix|cases|matrix|pmatrix|smallmatrix|vmatrix|Vmatrix|gather\*?|gathered|equation\*?|multline\*?)\}/
+function isSelfDisplayMathEnvironment(content) {
+  return new RegExp(String.raw`\\begin\{(?:${SELF_DISPLAY_ENV_NAMES})\}`)
     .test(content);
 }
 
 function toDisplayMathExpression(expression) {
+  const trimmed = expression.trim();
+  if (
+    (trimmed.startsWith('$$') && trimmed.endsWith('$$')) ||
+    (trimmed.startsWith('\\[') && trimmed.endsWith('\\]'))
+  ) {
+    return trimmed;
+  }
+
   const inner = stripMathDelimiters(expression);
-  if (isDisplayMathEnvironment(inner)) {
+  if (isSelfDisplayMathEnvironment(inner)) {
     return inner;
   }
 
@@ -274,7 +309,14 @@ function preserveMathExpressions(content) {
           `\n\n${createMathPlaceholder(placeholders, match, true)}\n\n`,
       );
 
-      return withDisplayMathIsolated.replace(
+      const withBareDisplayEnvironmentsIsolated = withDisplayMathIsolated
+        .replace(
+          BARE_DISPLAY_ENV_PATTERN,
+          (match) =>
+            `\n\n${createMathPlaceholder(placeholders, match, true)}\n\n`,
+        );
+
+      return withBareDisplayEnvironmentsIsolated.replace(
         INLINE_MATH_PATTERN,
         (match) => createMathPlaceholder(placeholders, match, false),
       );
@@ -309,7 +351,10 @@ function markdownToHtml(content) {
 }
 
 function containsRenderableMath(content) {
-  return /(?:\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$)/m
+  return new RegExp(
+    String.raw`(?:\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\\begin\{(?:${DISPLAY_ENV_NAMES})\}(?:\{[^{}]*\})?[\s\S]+?\\end\{(?:${DISPLAY_ENV_NAMES})\}|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$)`,
+    'm',
+  )
     .test(content);
 }
 
@@ -547,7 +592,7 @@ function downloadTextFile(filename, content, mimeType) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function Message({ message }) {
+function Message({ message, shouldTypesetMath }) {
   if (message.role === 'assistant' && !message.content) {
     return null;
   }
@@ -557,9 +602,12 @@ function Message({ message }) {
   useEffect(() => {
     if (message.role === 'assistant' && contentRef.current) {
       enhanceCodeBlocks(contentRef.current);
-      typesetMath(contentRef.current, message.content);
+
+      if (shouldTypesetMath && !message.streaming) {
+        typesetMath(contentRef.current, message.content);
+      }
     }
-  }, [message.content, message.role]);
+  }, [message.content, message.role, message.streaming, shouldTypesetMath]);
 
   return html`
     <div class="${`message ${message.role}`}">
@@ -638,6 +686,7 @@ function Sidebar(
     status,
     onSelectModel,
     onStreamingToggle,
+    onOpenSystemPromptDialog,
     onNewChat,
     onLoadChat,
     onDeleteChat,
@@ -743,6 +792,13 @@ function Sidebar(
             <small>Stream replies as they arrive</small>
           </div>
         </label>
+        <button
+          type="button"
+          class="sidebar-secondary-btn"
+          onClick="${onOpenSystemPromptDialog}"
+        >
+          System Prompt
+        </button>
       </div>
     </aside>
   `;
@@ -815,6 +871,50 @@ function ExportDialog(
   `;
 }
 
+function SystemPromptDialog(
+  { value, onChange, onResetDefault, onConfirm, onCancel },
+) {
+  return html`
+    <div class="dialog-backdrop" onClick="${onCancel}">
+      <div
+        class="dialog dialog-wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="system-prompt-dialog-title"
+        onClick="${(event) => event.stopPropagation()}"
+      >
+        <h2 id="system-prompt-dialog-title">System prompt</h2>
+        <p class="dialog-message">
+          This prompt is prepended to chat requests before recent conversation context.
+        </p>
+        <label class="dialog-field" for="system-prompt-input">
+          <span>Prompt</span>
+          <textarea
+            id="system-prompt-input"
+            class="dialog-textarea"
+            rows="14"
+            value="${value}"
+            onInput="${(event) => onChange(event.currentTarget.value)}"
+          ></textarea>
+        </label>
+        <div class="dialog-actions dialog-actions-spread">
+          <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onResetDefault}">
+            Revert to default
+          </button>
+          <div class="dialog-actions-group">
+            <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onCancel}">
+              Cancel
+            </button>
+            <button type="button" class="dialog-btn dialog-btn-primary" onClick="${onConfirm}">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function LoginScreen(
   { loginValue, loginError, loginPending, onChange, onSubmit },
 ) {
@@ -866,6 +966,11 @@ function ChatArea(
   },
 ) {
   const chatRef = useRef(null);
+  const lastAssistantIndex = [...currentChat.messages].reduceRight(
+    (foundIndex, message, index) =>
+      foundIndex === -1 && message.role === 'assistant' ? index : foundIndex,
+    -1,
+  );
 
   useEffect(() => {
     if (chatRef.current) {
@@ -937,7 +1042,13 @@ function ChatArea(
   } else {
     content = currentChat.messages.map((message, index) =>
       html`
-        <${Message} key="${`${index}-${message.role}`}" message="${message}" />
+        <${Message}
+          key="${message.role === 'assistant' && index === lastAssistantIndex
+            ? `${index}-${message.role}-${message.streaming ? 'streaming' : 'final'}`
+            : `${index}-${message.role}`}"
+          message="${message}"
+          shouldTypesetMath="${index === lastAssistantIndex}"
+        />
       `
     );
   }
@@ -1007,6 +1118,9 @@ function App() {
   const [chatPendingDelete, setChatPendingDelete] = useState(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState('markdown');
+  const [systemPrompt, setSystemPrompt] = useState(() => readSystemPrompt());
+  const [systemPromptDraft, setSystemPromptDraft] = useState('');
+  const [systemPromptDialogOpen, setSystemPromptDialogOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1213,6 +1327,7 @@ function App() {
         prompt: trimmedPrompt,
         model: selectedModel,
         context: contextMessages,
+        system_prompt: systemPrompt,
         stream: false,
       }),
     });
@@ -1243,7 +1358,10 @@ function App() {
     let streamedContent = '';
     let nextChat = {
       ...draftChat,
-      messages: [...draftChat.messages, { role: 'assistant', content: '' }],
+      messages: [
+        ...draftChat.messages,
+        { role: 'assistant', content: '', streaming: true },
+      ],
     };
 
     setCurrentChat(nextChat);
@@ -1255,6 +1373,7 @@ function App() {
         prompt: trimmedPrompt,
         model: selectedModel,
         context: contextMessages,
+        system_prompt: systemPrompt,
         stream: true,
       }),
     });
@@ -1284,7 +1403,7 @@ function App() {
           ...draftChat,
           messages: [
             ...draftChat.messages,
-            { role: 'assistant', content: streamedContent },
+            { role: 'assistant', content: streamedContent, streaming: true },
           ],
         };
         setCurrentChat(nextChat);
@@ -1299,7 +1418,7 @@ function App() {
       ...draftChat,
       messages: [
         ...draftChat.messages,
-        { role: 'assistant', content: streamedContent },
+        { role: 'assistant', content: streamedContent, streaming: false },
       ],
     };
   }
@@ -1462,6 +1581,26 @@ function App() {
     setExportDialogOpen(false);
   }
 
+  function handleOpenSystemPromptDialog() {
+    setSystemPromptDraft(systemPrompt);
+    setSystemPromptDialogOpen(true);
+  }
+
+  function handleCancelSystemPromptDialog() {
+    setSystemPromptDialogOpen(false);
+  }
+
+  function handleResetSystemPromptDefault() {
+    setSystemPromptDraft(DEFAULT_SYSTEM_PROMPT);
+  }
+
+  function handleSaveSystemPrompt() {
+    const nextPrompt = systemPromptDraft.trim() || DEFAULT_SYSTEM_PROMPT;
+    setSystemPrompt(nextPrompt);
+    writeSystemPrompt(nextPrompt);
+    setSystemPromptDialogOpen(false);
+  }
+
   async function handleRetry() {
     setRetryPending(true);
     await loadModels(apiKey);
@@ -1519,6 +1658,7 @@ function App() {
           setStreamingEnabled(enabled);
           writeStreamingPreference(enabled);
         }}"
+        onOpenSystemPromptDialog="${handleOpenSystemPromptDialog}"
         onNewChat="${handleNewChat}"
         onLoadChat="${handleLoadChat}"
         onDeleteChat="${handleRequestDeleteChat}"
@@ -1557,6 +1697,17 @@ function App() {
             onFormatChange="${setExportFormat}"
             onConfirm="${handleConfirmExport}"
             onCancel="${handleCancelExport}"
+          />
+        `
+        : null}
+      ${systemPromptDialogOpen
+        ? html`
+          <${SystemPromptDialog}
+            value="${systemPromptDraft}"
+            onChange="${setSystemPromptDraft}"
+            onResetDefault="${handleResetSystemPromptDefault}"
+            onConfirm="${handleSaveSystemPrompt}"
+            onCancel="${handleCancelSystemPromptDialog}"
           />
         `
         : null}
