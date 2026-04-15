@@ -315,6 +315,35 @@ body {
   background-color: #fff;
 }
 
+.chat-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 16px 30px 8px;
+}
+
+.toolbar-btn {
+  padding: 10px 14px;
+  border: 1px solid #d0d0d0;
+  border-radius: 6px;
+  background-color: #fff;
+  color: #333;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.toolbar-btn:hover:not(:disabled) {
+  background-color: #f3f3f3;
+  border-color: #bcbcbc;
+}
+
+.toolbar-btn:disabled {
+  color: #999;
+  cursor: not-allowed;
+  background-color: #f7f7f7;
+}
+
 .chat-container {
   flex: 1;
   overflow-y: auto;
@@ -324,6 +353,12 @@ body {
 
 /* Narrow chat area on wider screens */
 @media (min-width: 768px) {
+  .chat-toolbar {
+    max-width: 800px;
+    margin: 0 auto;
+    width: 100%;
+  }
+
   .chat-container {
     max-width: 800px;
     margin: 0 auto;
@@ -470,6 +505,34 @@ body {
   line-height: 1.5;
 }
 
+.dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.dialog-field span {
+  font-size: 14px;
+  font-weight: 600;
+  color: #444;
+}
+
+.dialog-field select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d0d0d0;
+  border-radius: 6px;
+  background-color: #fff;
+  color: #333;
+  font: inherit;
+}
+
+.dialog-field select:focus {
+  outline: none;
+  border-color: #0084ff;
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
@@ -503,6 +566,15 @@ body {
 
 .dialog-btn-danger:hover {
   background-color: #b71c1c;
+}
+
+.dialog-btn-primary {
+  background-color: #0084ff;
+  color: #fff;
+}
+
+.dialog-btn-primary:hover {
+  background-color: #0073e6;
 }
 
 .message {

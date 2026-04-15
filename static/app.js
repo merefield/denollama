@@ -481,6 +481,72 @@ function chatPreview(chat) {
   return lastMessage.content.substring(0, 60) + '...';
 }
 
+function slugifyFilenamePart(value, fallback = 'chat') {
+  const normalized = (value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return normalized || fallback;
+}
+
+function buildExportFilename(chat, format) {
+  const titlePart = slugifyFilenamePart(chat.title || deriveChatTitle(chat));
+  const datePart = new Date().toISOString().slice(0, 10);
+  const extension = format === 'json' ? 'json' : 'md';
+  return `${titlePart}-${datePart}.${extension}`;
+}
+
+function buildMarkdownExport(chat) {
+  const lines = [
+    `# ${chat.title || deriveChatTitle(chat)}`,
+    '',
+    `- Model: ${chat.model || 'Unknown'}`,
+    `- Timestamp: ${chat.timestamp || 'Unknown'}`,
+    `- Messages: ${chat.messages.length}`,
+    '',
+    '---',
+    '',
+  ];
+
+  chat.messages.forEach((message, index) => {
+    const heading = message.role === 'user' ? 'User' : 'Assistant';
+    lines.push(`## ${heading}`);
+    lines.push('');
+    lines.push(message.content || '');
+
+    if (index < chat.messages.length - 1) {
+      lines.push('');
+      lines.push('---');
+      lines.push('');
+    }
+  });
+
+  return `${lines.join('\n').trim()}\n`;
+}
+
+function buildJsonExport(chat) {
+  return JSON.stringify({
+    title: chat.title || deriveChatTitle(chat),
+    model: chat.model || null,
+    timestamp: chat.timestamp || null,
+    exported_at: new Date().toISOString(),
+    messages: chat.messages,
+  }, null, 2);
+}
+
+function downloadTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function Message({ message }) {
   if (message.role === 'assistant' && !message.content) {
     return null;
@@ -708,6 +774,46 @@ function ConfirmDialog(
   `;
 }
 
+function ExportDialog(
+  { format, onFormatChange, onConfirm, onCancel },
+) {
+  return html`
+    <div class="dialog-backdrop" onClick="${onCancel}">
+      <div
+        class="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-dialog-title"
+        onClick="${(event) => event.stopPropagation()}"
+      >
+        <h2 id="export-dialog-title">Export chat</h2>
+        <p class="dialog-message">
+          Choose the format to save this conversation.
+        </p>
+        <label class="dialog-field" for="export-format">
+          <span>Format</span>
+          <select
+            id="export-format"
+            value="${format}"
+            onChange="${(event) => onFormatChange(event.currentTarget.value)}"
+          >
+            <option value="markdown">Markdown (.md)</option>
+            <option value="json">JSON (.json)</option>
+          </select>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onCancel}">
+            Cancel
+          </button>
+          <button type="button" class="dialog-btn dialog-btn-primary" onClick="${onConfirm}">
+            Export
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function LoginScreen(
   { loginValue, loginError, loginPending, onChange, onSubmit },
 ) {
@@ -755,6 +861,7 @@ function ChatArea(
     onPromptChange,
     onPromptKeyDown,
     onSendMessage,
+    onOpenExportDialog,
   },
 ) {
   const chatRef = useRef(null);
@@ -836,6 +943,16 @@ function ChatArea(
 
   return html`
     <main class="main-content">
+      <div class="chat-toolbar">
+        <button
+          type="button"
+          class="toolbar-btn"
+          onClick="${onOpenExportDialog}"
+          disabled="${currentChat.messages.length === 0}"
+        >
+          Export
+        </button>
+      </div>
       <div id="chat-container" class="chat-container" ref="${chatRef}">
         ${content} ${status.kind === 'normal' && isLoading
           ? html`
@@ -887,6 +1004,8 @@ function App() {
   const [status, setStatus] = useState({ kind: 'normal', message: '' });
   const [retryPending, setRetryPending] = useState(false);
   const [chatPendingDelete, setChatPendingDelete] = useState(null);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState('markdown');
 
   useEffect(() => {
     let cancelled = false;
@@ -1305,6 +1424,43 @@ function App() {
     setChatPendingDelete(null);
   }
 
+  function handleOpenExportDialog() {
+    if (currentChat.messages.length === 0) {
+      return;
+    }
+
+    setExportFormat('markdown');
+    setExportDialogOpen(true);
+  }
+
+  function handleCancelExport() {
+    setExportDialogOpen(false);
+  }
+
+  function handleConfirmExport() {
+    if (currentChat.messages.length === 0) {
+      setExportDialogOpen(false);
+      return;
+    }
+
+    const filename = buildExportFilename(currentChat, exportFormat);
+    if (exportFormat === 'json') {
+      downloadTextFile(
+        filename,
+        buildJsonExport(currentChat),
+        'application/json;charset=utf-8',
+      );
+    } else {
+      downloadTextFile(
+        filename,
+        buildMarkdownExport(currentChat),
+        'text/markdown;charset=utf-8',
+      );
+    }
+
+    setExportDialogOpen(false);
+  }
+
   async function handleRetry() {
     setRetryPending(true);
     await loadModels(apiKey);
@@ -1377,6 +1533,7 @@ function App() {
         onPromptChange="${setPrompt}"
         onPromptKeyDown="${handlePromptKeyDown}"
         onSendMessage="${handleSendMessage}"
+        onOpenExportDialog="${handleOpenExportDialog}"
       />
       ${chatPendingDelete
         ? html`
@@ -1389,6 +1546,16 @@ function App() {
             cancelLabel="Cancel"
             onConfirm="${handleConfirmDeleteChat}"
             onCancel="${handleCancelDeleteChat}"
+          />
+        `
+        : null}
+      ${exportDialogOpen
+        ? html`
+          <${ExportDialog}
+            format="${exportFormat}"
+            onFormatChange="${setExportFormat}"
+            onConfirm="${handleConfirmExport}"
+            onCancel="${handleCancelExport}"
           />
         `
         : null}
