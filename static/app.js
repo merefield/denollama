@@ -14,6 +14,12 @@ import { marked } from './vendor/marked.esm.js';
 const API_KEY_STORAGE_KEY = 'llm-api-key';
 const CHAT_STORAGE_KEY = 'llm-chats';
 const html = htm.bind(h);
+const COPY_BUTTON_ICON = `
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M9 9h9v11H9z"></path>
+    <path d="M6 4h9v2H8v9H6z"></path>
+  </svg>
+`;
 
 function createEmptyChat(overrides = {}) {
   return {
@@ -160,6 +166,85 @@ function markdownToHtml(content) {
   };
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', '');
+  textArea.style.position = 'fixed';
+  textArea.style.top = '-9999px';
+  document.body.appendChild(textArea);
+  textArea.select();
+
+  try {
+    document.execCommand('copy');
+  } finally {
+    textArea.remove();
+  }
+}
+
+function enhanceCodeBlocks(container) {
+  const codeBlocks = container.querySelectorAll('pre');
+
+  codeBlocks.forEach((pre) => {
+    if (pre.dataset.copyEnhanced === 'true') {
+      return;
+    }
+
+    const code = pre.querySelector('code');
+    if (!code || !pre.parentNode) {
+      return;
+    }
+
+    pre.dataset.copyEnhanced = 'true';
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'code-block';
+    pre.parentNode.insertBefore(wrapper, pre);
+    wrapper.appendChild(pre);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'copy-code-btn';
+    button.innerHTML = COPY_BUTTON_ICON;
+    button.setAttribute('aria-label', 'Copy code');
+    button.title = 'Copy code';
+
+    let resetTimerId = null;
+
+    button.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      try {
+        await copyTextToClipboard(code.textContent ?? '');
+        button.classList.add('copied');
+        button.setAttribute('aria-label', 'Copied');
+        button.title = 'Copied';
+
+        if (resetTimerId) {
+          clearTimeout(resetTimerId);
+        }
+
+        resetTimerId = setTimeout(() => {
+          button.classList.remove('copied');
+          button.setAttribute('aria-label', 'Copy code');
+          button.title = 'Copy code';
+          resetTimerId = null;
+        }, 2000);
+      } catch (error) {
+        console.error('Failed to copy code block:', error);
+      }
+    });
+
+    wrapper.appendChild(button);
+  });
+}
+
 function chatPreview(chat) {
   const lastMessage = chat.messages[chat.messages.length - 1];
   if (!lastMessage) {
@@ -170,6 +255,14 @@ function chatPreview(chat) {
 }
 
 function Message({ message }) {
+  const contentRef = useRef(null);
+
+  useEffect(() => {
+    if (message.role === 'assistant' && contentRef.current) {
+      enhanceCodeBlocks(contentRef.current);
+    }
+  }, [message.content, message.role]);
+
   return html`
     <div class="${`message ${message.role}`}">
       <div class="message-header">
@@ -178,12 +271,13 @@ function Message({ message }) {
       ${message.role === 'assistant'
         ? html`
           <div
+            ref="${contentRef}"
             class="message-content"
             dangerouslySetInnerHTML="${markdownToHtml(message.content)}"
           />
         `
         : html`
-          <div class="message-content">${message.content}</div>
+          <div ref="${contentRef}" class="message-content">${message.content}</div>
         `}
     </div>
   `;

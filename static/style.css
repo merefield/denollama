@@ -389,13 +389,19 @@ body {
   color: #333;
 }
 
+.message.assistant .message-content .code-block {
+  position: relative;
+  margin: 12px 0;
+}
+
 .message.assistant .message-content pre {
   background-color: #1e1e1e;
   color: #d4d4d4;
   padding: 12px;
+  padding-top: 44px;
   border-radius: 6px;
   overflow-x: auto;
-  margin: 12px 0;
+  margin: 0;
 }
 
 .message.assistant .message-content code {
@@ -409,6 +415,41 @@ body {
 .message.assistant .message-content pre code {
   background-color: transparent;
   padding: 0;
+}
+
+.copy-code-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #d4d4d4;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.copy-code-btn:hover {
+  background-color: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.copy-code-btn.copied {
+  background-color: rgba(16, 163, 127, 0.2);
+  border-color: rgba(16, 163, 127, 0.45);
+  color: #7ae2c7;
+}
+
+.copy-code-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .message.assistant .message-content table {
