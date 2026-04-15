@@ -9,6 +9,13 @@ export interface ChatResponse {
   };
 }
 
+export interface ChatStreamChunk {
+  message?: {
+    content?: string;
+  };
+  done?: boolean;
+}
+
 export interface ModelInfo {
   model: string;
 }
@@ -21,6 +28,9 @@ export interface OllamaClient {
   chat(
     input: { model: string; messages: ChatMessage[] },
   ): Promise<ChatResponse>;
+  chatStream(
+    input: { model: string; messages: ChatMessage[] },
+  ): AsyncIterable<ChatStreamChunk>;
   list(): Promise<ModelListResponse>;
 }
 
@@ -56,6 +66,32 @@ export class HttpOllamaClient implements OllamaClient {
     };
   }
 
+  async *chatStream(
+    input: { model: string; messages: ChatMessage[] },
+  ): AsyncIterable<ChatStreamChunk> {
+    const response = await fetch(`${this.baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: input.model,
+        messages: input.messages,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new OllamaClientError(await readErrorMessage(response));
+    }
+
+    if (!response.body) {
+      throw new OllamaClientError('Ollama stream body missing');
+    }
+
+    yield* readNdjsonStream(response.body);
+  }
+
   async list(): Promise<ModelListResponse> {
     const response = await fetch(`${this.baseUrl}/api/tags`);
 
@@ -85,4 +121,43 @@ async function readErrorMessage(response: Response): Promise<string> {
   }
 
   return response.statusText || `HTTP ${response.status}`;
+}
+
+async function* readNdjsonStream(
+  stream: ReadableStream<Uint8Array>,
+): AsyncIterable<ChatStreamChunk> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex = buffer.indexOf('\n');
+
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+
+        if (line) {
+          yield JSON.parse(line);
+        }
+
+        newlineIndex = buffer.indexOf('\n');
+      }
+    }
+
+    buffer += decoder.decode();
+    const trailingLine = buffer.trim();
+    if (trailingLine) {
+      yield JSON.parse(trailingLine);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }

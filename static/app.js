@@ -13,6 +13,7 @@ import { marked } from './vendor/marked.esm.js';
 
 const API_KEY_STORAGE_KEY = 'llm-api-key';
 const CHAT_STORAGE_KEY = 'llm-chats';
+const STREAMING_STORAGE_KEY = 'llm-streaming-enabled';
 const html = htm.bind(h);
 const COPY_BUTTON_ICON = `
   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -78,6 +79,15 @@ async function fetchJson(path, options = {}) {
   const response = await fetch(path, options);
   const data = await response.json().catch(() => ({}));
   return { response, data };
+}
+
+function readStreamingPreference() {
+  const stored = localStorage.getItem(STREAMING_STORAGE_KEY);
+  return stored === null ? true : stored !== 'false';
+}
+
+function writeStreamingPreference(enabled) {
+  localStorage.setItem(STREAMING_STORAGE_KEY, String(enabled));
 }
 
 function readChatsFromStorage() {
@@ -164,6 +174,43 @@ function markdownToHtml(content) {
   return {
     __html: marked.parse(content),
   };
+}
+
+async function* readNdjsonEvents(stream) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex = buffer.indexOf('\n');
+
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+
+        if (line) {
+          yield JSON.parse(line);
+        }
+
+        newlineIndex = buffer.indexOf('\n');
+      }
+    }
+
+    buffer += decoder.decode();
+    const trailingLine = buffer.trim();
+    if (trailingLine) {
+      yield JSON.parse(trailingLine);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 async function copyTextToClipboard(text) {
@@ -255,6 +302,10 @@ function chatPreview(chat) {
 }
 
 function Message({ message }) {
+  if (message.role === 'assistant' && !message.content) {
+    return null;
+  }
+
   const contentRef = useRef(null);
 
   useEffect(() => {
@@ -336,8 +387,10 @@ function Sidebar(
     currentChatId,
     availableModels,
     selectedModel,
+    streamingEnabled,
     status,
     onSelectModel,
+    onStreamingToggle,
     onNewChat,
     onLoadChat,
   },
@@ -405,6 +458,21 @@ function Sidebar(
               `
             )}
         </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <label class="sidebar-toggle">
+          <input
+            type="checkbox"
+            checked="${streamingEnabled}"
+            onChange="${(event) =>
+              onStreamingToggle(event.currentTarget.checked)}"
+          />
+          <div class="sidebar-toggle-text">
+            <span>Streaming</span>
+            <small>Stream replies as they arrive</small>
+          </div>
+        </label>
       </div>
     </aside>
   `;
@@ -582,6 +650,9 @@ function App() {
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [streamingEnabled, setStreamingEnabled] = useState(() =>
+    readStreamingPreference()
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState({ kind: 'normal', message: '' });
   const [retryPending, setRetryPending] = useState(false);
@@ -779,6 +850,109 @@ function App() {
     }
   }
 
+  async function sendNonStreamingMessage(
+    draftChat,
+    trimmedPrompt,
+    contextMessages,
+  ) {
+    const { response, data } = await fetchJson('/api/v1/response', {
+      method: 'POST',
+      headers: getApiHeaders(apiKey, true),
+      body: JSON.stringify({
+        prompt: trimmedPrompt,
+        model: selectedModel,
+        context: contextMessages,
+        stream: false,
+      }),
+    });
+
+    if (response.status === 401) {
+      handleUnauthorized('Session expired. Please enter your API key again.');
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Unknown error occurred');
+    }
+
+    return {
+      ...draftChat,
+      messages: [
+        ...draftChat.messages,
+        { role: 'assistant', content: data.response },
+      ],
+    };
+  }
+
+  async function sendStreamingMessage(
+    draftChat,
+    trimmedPrompt,
+    contextMessages,
+  ) {
+    let streamedContent = '';
+    let nextChat = {
+      ...draftChat,
+      messages: [...draftChat.messages, { role: 'assistant', content: '' }],
+    };
+
+    setCurrentChat(nextChat);
+
+    const response = await fetch('/api/v1/response', {
+      method: 'POST',
+      headers: getApiHeaders(apiKey, true),
+      body: JSON.stringify({
+        prompt: trimmedPrompt,
+        model: selectedModel,
+        context: contextMessages,
+        stream: true,
+      }),
+    });
+
+    if (response.status === 401) {
+      handleUnauthorized('Session expired. Please enter your API key again.');
+      return null;
+    }
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'Unknown error occurred');
+    }
+
+    if (!response.body) {
+      throw new Error('Stream unavailable');
+    }
+
+    for await (const event of readNdjsonEvents(response.body)) {
+      if (event.error) {
+        throw new Error(event.error);
+      }
+
+      if (typeof event.delta === 'string') {
+        streamedContent += event.delta;
+        nextChat = {
+          ...draftChat,
+          messages: [
+            ...draftChat.messages,
+            { role: 'assistant', content: streamedContent },
+          ],
+        };
+        setCurrentChat(nextChat);
+      }
+
+      if (event.done && typeof event.response === 'string') {
+        streamedContent = event.response;
+      }
+    }
+
+    return {
+      ...draftChat,
+      messages: [
+        ...draftChat.messages,
+        { role: 'assistant', content: streamedContent },
+      ],
+    };
+  }
+
   async function handleSendMessage() {
     const trimmedPrompt = prompt.trim();
     if (
@@ -802,42 +976,17 @@ function App() {
 
     try {
       const contextMessages = draftChat.messages.slice(-4, -1);
-      const { response, data } = await fetchJson('/api/v1/response', {
-        method: 'POST',
-        headers: getApiHeaders(apiKey, true),
-        body: JSON.stringify({
-          prompt: trimmedPrompt,
-          model: selectedModel,
-          context: contextMessages,
-        }),
-      });
+      let nextChat = streamingEnabled
+        ? await sendStreamingMessage(draftChat, trimmedPrompt, contextMessages)
+        : await sendNonStreamingMessage(
+          draftChat,
+          trimmedPrompt,
+          contextMessages,
+        );
 
-      if (response.status === 401) {
-        handleUnauthorized('Session expired. Please enter your API key again.');
+      if (!nextChat) {
         return;
       }
-
-      if (!response.ok) {
-        setCurrentChat({
-          ...draftChat,
-          messages: [
-            ...draftChat.messages,
-            {
-              role: 'assistant',
-              content: `Error: ${data.error || 'Unknown error occurred'}`,
-            },
-          ],
-        });
-        return;
-      }
-
-      let nextChat = {
-        ...draftChat,
-        messages: [
-          ...draftChat.messages,
-          { role: 'assistant', content: data.response },
-        ],
-      };
 
       if (isFirstMessage) {
         nextChat.title =
@@ -853,7 +1002,10 @@ function App() {
         ...draftChat,
         messages: [
           ...draftChat.messages,
-          { role: 'assistant', content: `Error: ${error.message}` },
+          {
+            role: 'assistant',
+            content: `Error: ${error.message}`,
+          },
         ],
       });
     } finally {
@@ -940,8 +1092,13 @@ function App() {
         currentChatId="${currentChat.id}"
         availableModels="${availableModels}"
         selectedModel="${selectedModel}"
+        streamingEnabled="${streamingEnabled}"
         status="${status}"
         onSelectModel="${setSelectedModel}"
+        onStreamingToggle="${(enabled) => {
+          setStreamingEnabled(enabled);
+          writeStreamingPreference(enabled);
+        }}"
         onNewChat="${handleNewChat}"
         onLoadChat="${handleLoadChat}"
       />

@@ -120,6 +120,7 @@ async function handleResponseRequest(
   const prompt = typeof data.prompt === 'string' ? data.prompt : undefined;
   const model = typeof data.model === 'string' ? data.model : undefined;
   const context = Array.isArray(data.context) ? data.context : [];
+  const stream = data.stream === true;
 
   if (!prompt) {
     return jsonResponse({ error: "Missing 'prompt' field" }, 400);
@@ -145,6 +146,10 @@ async function handleResponseRequest(
   });
 
   try {
+    if (stream) {
+      return streamChatResponse(model, messages, deps.client);
+    }
+
     const response = await deps.client.chat({ model, messages });
     return jsonResponse({
       response: response.message.content,
@@ -153,6 +158,63 @@ async function handleResponseRequest(
   } catch (error) {
     return handleApiError(error);
   }
+}
+
+function streamChatResponse(
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  client: OllamaClient,
+): Response {
+  const encoder = new TextEncoder();
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let accumulated = '';
+
+      try {
+        for await (const chunk of client.chatStream({ model, messages })) {
+          const delta = chunk.message?.content ?? '';
+          if (delta) {
+            accumulated += delta;
+            controller.enqueue(
+              encoder.encode(`${JSON.stringify({ delta })}\n`),
+            );
+          }
+
+          if (chunk.done) {
+            controller.enqueue(
+              encoder.encode(
+                `${JSON.stringify({ done: true, response: accumulated, model })}\n`,
+              ),
+            );
+          }
+        }
+
+        if (!accumulated) {
+          controller.enqueue(
+            encoder.encode(
+              `${JSON.stringify({ done: true, response: '', model })}\n`,
+            ),
+          );
+        }
+      } catch (error) {
+        const apiError = buildApiErrorPayload(error);
+        controller.enqueue(
+          encoder.encode(`${JSON.stringify(apiError)}\n`),
+        );
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    },
+  });
 }
 
 function requireApiKey(request: Request, apiKey: string): Response | null {
@@ -222,12 +284,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function handleApiError(error: unknown): Response {
+  return jsonResponse(buildApiErrorPayload(error), 500);
+}
+
+function buildApiErrorPayload(error: unknown): { error: string } {
   if (error instanceof OllamaClientError) {
-    return jsonResponse({ error: `Ollama error: ${error.message}` }, 500);
+    return { error: `Ollama error: ${error.message}` };
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  return jsonResponse({ error: `Server error: ${message}` }, 500);
+  return { error: `Server error: ${message}` };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

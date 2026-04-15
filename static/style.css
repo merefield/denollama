@@ -219,6 +219,46 @@ body {
   padding: 10px;
 }
 
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 20px;
+}
+
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background-color: #3c3c3c;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.sidebar-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #0084ff;
+  flex: 0 0 auto;
+}
+
+.sidebar-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-toggle-text span {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.sidebar-toggle-text small {
+  font-size: 12px;
+  color: #b0b0b0;
+}
+
 /* Main Content Styles */
 .main-content {
   flex: 1;

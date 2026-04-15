@@ -266,7 +266,7 @@ denollama/
 ---
 
 ## Roadmap
-- [ ] Streaming responses
+- [x] Streaming responses
 - [ ] Frontend-specific tests
 - [ ] Markdown sanitization
 - [ ] Export chat as JSON/Markdown

@@ -1,6 +1,7 @@
 import { createApp } from '../src/app.ts';
 import {
   ChatMessage,
+  ChatStreamChunk,
   ModelListResponse,
   OllamaClient,
   OllamaClientError,
@@ -9,12 +10,19 @@ import { assert, assertEquals, assertJson } from './helpers.ts';
 
 class FakeOllamaClient implements OllamaClient {
   chatCalls: Array<{ model: string; messages: ChatMessage[] }> = [];
+  chatStreamCalls: Array<{ model: string; messages: ChatMessage[] }> = [];
   listCalls = 0;
   chatResult = 'This is a test response';
+  streamChunks: ChatStreamChunk[] = [
+    { message: { content: 'This ' } },
+    { message: { content: 'streams' } },
+    { done: true },
+  ];
   listResult: ModelListResponse = {
     models: [{ model: 'llama2' }, { model: 'mistral' }],
   };
   chatError: Error | null = null;
+  chatStreamError: Error | null = null;
   listError: Error | null = null;
 
   chat(input: { model: string; messages: ChatMessage[] }) {
@@ -28,6 +36,17 @@ class FakeOllamaClient implements OllamaClient {
         content: this.chatResult,
       },
     });
+  }
+
+  async *chatStream(input: { model: string; messages: ChatMessage[] }) {
+    this.chatStreamCalls.push(input);
+    if (this.chatStreamError) {
+      throw this.chatStreamError;
+    }
+
+    for (const chunk of this.streamChunks) {
+      yield chunk;
+    }
   }
 
   list() {
@@ -231,6 +250,59 @@ Deno.test('POST /api/v1/response builds messages with context and defaults', asy
       { role: 'user', content: 'Tell me more' },
     ],
   });
+});
+
+Deno.test('POST /api/v1/response streams NDJSON when requested', async () => {
+  const client = new FakeOllamaClient();
+  const app = createApp({ client });
+
+  const response = await makeRequest(app, '/api/v1/response', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: 'Stream this',
+      model: 'llama2',
+      stream: true,
+    }),
+  });
+
+  assertEquals(response.status, 200);
+  assert(
+    response.headers.get('content-type')?.includes('application/x-ndjson'),
+    'Expected NDJSON content type',
+  );
+  const body = await response.text();
+  const events = body.trim().split('\n').map((line) => JSON.parse(line));
+
+  assertEquals(events, [
+    { delta: 'This ' },
+    { delta: 'streams' },
+    { done: true, response: 'This streams', model: 'llama2' },
+  ]);
+  assertEquals(client.chatCalls.length, 0);
+  assertEquals(client.chatStreamCalls.length, 1);
+});
+
+Deno.test('POST /api/v1/response streams error payloads when streaming fails', async () => {
+  const client = new FakeOllamaClient();
+  client.chatStreamError = new OllamaClientError('stream failed');
+  const app = createApp({ client });
+
+  const response = await makeRequest(app, '/api/v1/response', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: 'Stream this',
+      model: 'llama2',
+      stream: true,
+    }),
+  });
+
+  assertEquals(response.status, 200);
+  const body = await response.text();
+  const events = body.trim().split('\n').map((line) => JSON.parse(line));
+
+  assertEquals(events, [{ error: 'Ollama error: stream failed' }]);
 });
 
 Deno.test('POST /api/v1/response ignores non-list context', async () => {
