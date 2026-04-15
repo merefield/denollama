@@ -269,6 +269,7 @@ denollama/
 ## Roadmap
 - [x] Streaming responses
 - [x] MathJax support
+- [x] Delete chats from history
 - [ ] Frontend-specific tests
 - [ ] Markdown sanitization
 - [ ] Export chat as JSON/Markdown

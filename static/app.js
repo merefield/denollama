@@ -574,6 +574,7 @@ function Sidebar(
     onStreamingToggle,
     onNewChat,
     onLoadChat,
+    onDeleteChat,
   },
 ) {
   const selectorDisabled = status.kind !== 'normal' ||
@@ -630,11 +631,32 @@ function Sidebar(
                   class="${`chat-item ${
                     chat.id === currentChatId ? 'active' : ''
                   }`}"
-                  onClick="${() => onLoadChat(chat.id)}"
                 >
-                  <div class="chat-item-title">${chat.title ||
-                    'Untitled Chat'}</div>
-                  <div class="chat-item-preview">${chatPreview(chat)}</div>
+                  <button
+                    type="button"
+                    class="chat-item-main"
+                    onClick="${() => onLoadChat(chat.id)}"
+                  >
+                    <div class="chat-item-title">${chat.title ||
+                      'Untitled Chat'}</div>
+                    <div class="chat-item-preview">${chatPreview(chat)}</div>
+                  </button>
+                  <button
+                    type="button"
+                    class="chat-delete-btn"
+                    aria-label="${`Delete ${chat.title || 'chat'}`}"
+                    title="Delete chat"
+                    onClick="${(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onDeleteChat(chat);
+                    }}"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M9 3h6l1 2h4v2H4V5h4z"></path>
+                      <path d="M7 8h10l-.8 11.2A2 2 0 0 1 14.2 21H9.8a2 2 0 0 1-2-1.8z"></path>
+                    </svg>
+                  </button>
                 </div>
               `
             )}
@@ -656,6 +678,33 @@ function Sidebar(
         </label>
       </div>
     </aside>
+  `;
+}
+
+function ConfirmDialog(
+  { title, message, confirmLabel, cancelLabel, onConfirm, onCancel },
+) {
+  return html`
+    <div class="dialog-backdrop" onClick="${onCancel}">
+      <div
+        class="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dialog-title"
+        onClick="${(event) => event.stopPropagation()}"
+      >
+        <h2 id="dialog-title">${title}</h2>
+        <p class="dialog-message">${message}</p>
+        <div class="dialog-actions">
+          <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onCancel}">
+            ${cancelLabel}
+          </button>
+          <button type="button" class="dialog-btn dialog-btn-danger" onClick="${onConfirm}">
+            ${confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -837,6 +886,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState({ kind: 'normal', message: '' });
   const [retryPending, setRetryPending] = useState(false);
+  const [chatPendingDelete, setChatPendingDelete] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1223,6 +1273,38 @@ function App() {
     }
   }
 
+  function handleRequestDeleteChat(chat) {
+    setChatPendingDelete(chat);
+  }
+
+  function handleCancelDeleteChat() {
+    setChatPendingDelete(null);
+  }
+
+  function handleConfirmDeleteChat() {
+    if (!chatPendingDelete) {
+      return;
+    }
+
+    const chatId = chatPendingDelete.id;
+    setChats((currentChats) => {
+      const nextChats = currentChats.filter((chat) => chat.id !== chatId);
+      writeChatsToStorage(nextChats);
+      return nextChats;
+    });
+
+    if (currentChat.id === chatId) {
+      setCurrentChat(createEmptyChat({
+        id: Date.now(),
+        model: selectedModel,
+        timestamp: new Date().toISOString(),
+      }));
+      setPrompt('');
+    }
+
+    setChatPendingDelete(null);
+  }
+
   async function handleRetry() {
     setRetryPending(true);
     await loadModels(apiKey);
@@ -1282,6 +1364,7 @@ function App() {
         }}"
         onNewChat="${handleNewChat}"
         onLoadChat="${handleLoadChat}"
+        onDeleteChat="${handleRequestDeleteChat}"
       />
       <${ChatArea}
         currentChat="${currentChat}"
@@ -1295,6 +1378,20 @@ function App() {
         onPromptKeyDown="${handlePromptKeyDown}"
         onSendMessage="${handleSendMessage}"
       />
+      ${chatPendingDelete
+        ? html`
+          <${ConfirmDialog}
+            title="Delete chat?"
+            message="${`Delete \"${
+              chatPendingDelete.title || 'Untitled Chat'
+            }\" from chat history? This cannot be undone.`}"
+            confirmLabel="Delete"
+            cancelLabel="Cancel"
+            onConfirm="${handleConfirmDeleteChat}"
+            onCancel="${handleCancelDeleteChat}"
+          />
+        `
+        : null}
     </div>
   `;
 }
