@@ -1034,7 +1034,7 @@ function ChatArea(
   } else if (currentChat.messages.length === 0) {
     content = html`
       <div class="welcome-message">
-        <h1>${currentChat.id ? 'New Chat' : 'Welcome to LLM Chat'}</h1>
+        <h1>${currentChat.id ? 'New Chat' : 'Welcome to Denollama Chat'}</h1>
         <p>${currentChat.id
           ? 'Start a conversation!'
           : 'Select a model and start chatting!'}</p>
