@@ -15,12 +15,18 @@ const API_KEY_STORAGE_KEY = 'llm-api-key';
 const CHAT_STORAGE_KEY = 'llm-chats';
 const STREAMING_STORAGE_KEY = 'llm-streaming-enabled';
 const html = htm.bind(h);
+const MATH_PLACEHOLDER_PREFIX = '@@MATHJAX_PLACEHOLDER_';
+const DISPLAY_MATH_PATTERN = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]/g;
+const INLINE_MATH_PATTERN =
+  /\\\([\s\S]+?\\\)|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$/g;
 const COPY_BUTTON_ICON = `
   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
     <path d="M9 9h9v11H9z"></path>
     <path d="M6 4h9v2H8v9H6z"></path>
   </svg>
 `;
+let mathTypesetQueue = Promise.resolve();
+const pendingMathContainers = new Set();
 
 function createEmptyChat(overrides = {}) {
   return {
@@ -170,10 +176,184 @@ function upsertChat(chats, chat) {
   return [chat, ...chats].slice(0, 50);
 }
 
+function createMathPlaceholder(placeholders, expression, display) {
+  const placeholder = `${MATH_PLACEHOLDER_PREFIX}${placeholders.length}@@`;
+  placeholders.push({ placeholder, expression, display });
+  return placeholder;
+}
+
+function isStandaloneInlineMathExpression(content) {
+  if (!content) {
+    return false;
+  }
+
+  const trimmed = content.trim();
+  if (trimmed.startsWith('$$') || trimmed.startsWith('\\[')) {
+    return false;
+  }
+
+  return (
+    (trimmed.startsWith('$') && trimmed.endsWith('$')) ||
+    (trimmed.startsWith('\\(') && trimmed.endsWith('\\)'))
+  );
+}
+
+function isolateStandaloneMathLines(content) {
+  return content.split('\n').map((line) => {
+    const trimmed = line.trim();
+    if (!isStandaloneInlineMathExpression(trimmed)) {
+      return line;
+    }
+
+    return `\n${trimmed}\n`;
+  }).join('\n');
+}
+
+function stripMathDelimiters(expression) {
+  const trimmed = expression.trim();
+
+  if (trimmed.startsWith('$$') && trimmed.endsWith('$$')) {
+    return trimmed.slice(2, -2).trim();
+  }
+
+  if (trimmed.startsWith('\\[') && trimmed.endsWith('\\]')) {
+    return trimmed.slice(2, -2).trim();
+  }
+
+  if (trimmed.startsWith('\\(') && trimmed.endsWith('\\)')) {
+    return trimmed.slice(2, -2).trim();
+  }
+
+  if (trimmed.startsWith('$') && trimmed.endsWith('$')) {
+    return trimmed.slice(1, -1).trim();
+  }
+
+  return trimmed;
+}
+
+function isDisplayMathEnvironment(content) {
+  return /\\begin\{(?:align\*?|aligned|array|bmatrix|Bmatrix|cases|matrix|pmatrix|smallmatrix|vmatrix|Vmatrix|gather\*?|gathered|equation\*?|multline\*?)\}/
+    .test(content);
+}
+
+function toDisplayMathExpression(expression) {
+  const inner = stripMathDelimiters(expression);
+  if (isDisplayMathEnvironment(inner)) {
+    return inner;
+  }
+
+  return `\\[${inner}\\]`;
+}
+
+function replaceParagraphPlaceholder(result, placeholder, replacement) {
+  return result.replace(
+    new RegExp(`<p>\\s*${placeholder}\\s*</p>`, 'g'),
+    `<div class="math-display">${replacement}</div>`,
+  );
+}
+
+function preserveMathExpressions(content) {
+  const placeholders = [];
+  const markdown = content.split(/(```[\s\S]*?```)/g).map((segment) => {
+    if (segment.startsWith('```')) {
+      return segment;
+    }
+
+    const normalizedSegment = isolateStandaloneMathLines(segment);
+
+    return normalizedSegment.split(/(`[^`\n]*`)/g).map((inlineSegment) => {
+      if (
+        inlineSegment.startsWith('`') && inlineSegment.endsWith('`')
+      ) {
+        return inlineSegment;
+      }
+
+      const withDisplayMathIsolated = inlineSegment.replace(
+        DISPLAY_MATH_PATTERN,
+        (match) =>
+          `\n\n${createMathPlaceholder(placeholders, match, true)}\n\n`,
+      );
+
+      return withDisplayMathIsolated.replace(
+        INLINE_MATH_PATTERN,
+        (match) => createMathPlaceholder(placeholders, match, false),
+      );
+    }).join('');
+  }).join('');
+
+  return { markdown, placeholders };
+}
+
+function restoreMathExpressions(htmlContent, placeholders) {
+  return placeholders.reduce((result, entry) => {
+    if (entry.display) {
+      const replacement = toDisplayMathExpression(entry.expression);
+      return replaceParagraphPlaceholder(result, entry.placeholder, replacement)
+        .split(entry.placeholder)
+        .join(`<div class="math-display">${replacement}</div>`);
+    }
+
+    const displayReplacement = toDisplayMathExpression(entry.expression);
+    return replaceParagraphPlaceholder(result, entry.placeholder, displayReplacement)
+      .split(entry.placeholder)
+      .join(entry.expression);
+  }, htmlContent);
+}
+
 function markdownToHtml(content) {
+  const { markdown, placeholders } = preserveMathExpressions(content);
+
   return {
-    __html: marked.parse(content),
+    __html: restoreMathExpressions(marked.parse(markdown), placeholders),
   };
+}
+
+function containsRenderableMath(content) {
+  return /(?:\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$)/m
+    .test(content);
+}
+
+function queueMathTypeset(containers) {
+  const mathJax = globalThis.MathJax;
+  if (!mathJax?.typesetPromise || containers.length === 0) {
+    return;
+  }
+
+  mathTypesetQueue = mathTypesetQueue
+    .catch(() => {})
+    .then(() => {
+      mathJax.typesetClear?.(containers);
+      return mathJax.typesetPromise(containers);
+    })
+    .catch((error) => {
+      console.error('MathJax typeset failed:', error);
+    });
+}
+
+function flushPendingMathTypeset() {
+  const containers = [...pendingMathContainers].filter((container) =>
+    document.body.contains(container)
+  );
+
+  pendingMathContainers.clear();
+  queueMathTypeset(containers);
+}
+
+globalThis.addEventListener('mathjax-ready', flushPendingMathTypeset);
+
+function typesetMath(container, content) {
+  if (!container || !containsRenderableMath(content)) {
+    pendingMathContainers.delete(container);
+    return;
+  }
+
+  if (!globalThis.MathJax?.typesetPromise) {
+    pendingMathContainers.add(container);
+    return;
+  }
+
+  pendingMathContainers.delete(container);
+  queueMathTypeset([container]);
 }
 
 async function* readNdjsonEvents(stream) {
@@ -311,6 +491,7 @@ function Message({ message }) {
   useEffect(() => {
     if (message.role === 'assistant' && contentRef.current) {
       enhanceCodeBlocks(contentRef.current);
+      typesetMath(contentRef.current, message.content);
     }
   }, [message.content, message.role]);
 

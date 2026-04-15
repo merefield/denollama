@@ -48,8 +48,9 @@ A clean, mobile-inspired chat UI to interact with models served by [Ollama](http
 | Auto Titles | First user prompt triggers a lightweight title generation request |
 | History | Chats persisted in browser localStorage; reload and revisit anytime |
 | Markdown | Supports code blocks, tables, lists via client-side rendering |
+| Math | MathJax v4 renders common TeX delimiters in assistant replies |
 | Copy Code | Copy button on code blocks in assistant replies |
-| Vendored Frontend Runtime | Preact, htm, and Marked are shipped locally under `static/vendor/` |
+| Vendored Frontend Runtime | Preact, htm, Marked, and MathJax are shipped locally under `static/vendor/` |
 | Responsive | Feels like a compact mobile chat on wider screens |
 
 ### Chat Flow
@@ -268,6 +269,7 @@ denollama/
 ## Roadmap
 - [x] Streaming responses
 - [ ] Frontend-specific tests
+- [x] MathJax support
 - [ ] Markdown sanitization
 - [ ] Export chat as JSON/Markdown
 - [ ] Optional system prompt injection
