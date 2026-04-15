@@ -1,0 +1,17 @@
+{
+  "tasks": {
+    "dev": "deno run --allow-env --allow-net --allow-read src/server.ts",
+    "test": "deno test --allow-read"
+  },
+  "fmt": {
+    "semiColons": true,
+    "singleQuote": true
+  },
+  "lint": {
+    "rules": {
+      "tags": [
+        "recommended"
+      ]
+    }
+  }
+}
