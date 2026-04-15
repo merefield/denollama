@@ -33,7 +33,7 @@ interface AppDeps {
   staticDir: URL;
 }
 
-async function handleRequest(
+function handleRequest(
   request: Request,
   deps: AppDeps,
 ): Promise<Response> {

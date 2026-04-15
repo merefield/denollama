@@ -17,26 +17,26 @@ class FakeOllamaClient implements OllamaClient {
   chatError: Error | null = null;
   listError: Error | null = null;
 
-  async chat(input: { model: string; messages: ChatMessage[] }) {
+  chat(input: { model: string; messages: ChatMessage[] }) {
     this.chatCalls.push(input);
     if (this.chatError) {
-      throw this.chatError;
+      return Promise.reject(this.chatError);
     }
 
-    return {
+    return Promise.resolve({
       message: {
         content: this.chatResult,
       },
-    };
+    });
   }
 
-  async list() {
+  list() {
     this.listCalls += 1;
     if (this.listError) {
-      throw this.listError;
+      return Promise.reject(this.listError);
     }
 
-    return this.listResult;
+    return Promise.resolve(this.listResult);
   }
 }
 

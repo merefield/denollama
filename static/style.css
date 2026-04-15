@@ -13,6 +13,10 @@ body {
   overflow: hidden;
 }
 
+#app {
+  height: 100vh;
+}
+
 /* Login Form Styles */
 .login-container {
   display: flex;
@@ -207,6 +211,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sidebar-empty {
+  color: #666;
+  font-size: 13px;
+  padding: 10px;
 }
 
 /* Main Content Styles */

@@ -8,71 +8,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   </head>
   <body>
-    <!-- Login Form -->
-    <div id="login-container" class="login-container" style="display: none">
-      <div class="login-form">
-        <h1>API Key Required</h1>
-        <p class="login-description">
-          Please enter your API key to access the chat interface.
-        </p>
-        <form id="login-form">
-          <input
-            type="password"
-            id="api-key-input"
-            placeholder="Enter API key"
-            required
-            autocomplete="off"
-          />
-          <div id="login-error" class="login-error" style="display: none"></div>
-          <button type="submit" id="login-submit-btn" class="login-submit-btn">
-            Connect
-          </button>
-        </form>
-      </div>
-    </div>
-
-    <div class="container" id="main-container" style="display: none">
-      <!-- Sidebar -->
-      <aside class="sidebar">
-        <div class="sidebar-header">
-          <h2>LLM Chat</h2>
-        </div>
-
-        <div class="model-selector">
-          <label for="model-select">Model:</label>
-          <select id="model-select">
-            <option value="">Loading...</option>
-          </select>
-        </div>
-
-        <button id="new-chat-btn" class="new-chat-btn">+ New Chat</button>
-
-        <div class="chat-history">
-          <h3>Previous Chats</h3>
-          <div id="previous-chats"></div>
-        </div>
-      </aside>
-
-      <!-- Main Chat Area -->
-      <main class="main-content">
-        <div id="chat-container" class="chat-container">
-          <div class="welcome-message">
-            <h1>Welcome to LLM Chat</h1>
-            <p>Select a model and start chatting!</p>
-          </div>
-        </div>
-
-        <div class="input-area">
-          <textarea
-            id="user-input"
-            placeholder="Type your message here..."
-            rows="3"
-          ></textarea>
-          <button id="send-btn" class="send-btn">Send</button>
-        </div>
-      </main>
-    </div>
-
-    <script src="/static/app.js"></script>
+    <div id="app"></div>
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>
