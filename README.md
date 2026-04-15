@@ -6,8 +6,9 @@ Current state:
 
 - Backend ported to TypeScript with `Deno.serve`
 - Backend behavior covered by a Deno test suite
-- Static frontend carried over unchanged as the initial baseline
+- Static frontend rewritten with Preact
 - Ollama integration switched from the Python client to direct HTTP calls
+- Preact 10.29.1, htm 3.1.1, and Marked 18.0.0 are vendored under `static/vendor/` so the app does not depend on a CDN at runtime
 
 ## Run
 

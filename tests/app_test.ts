@@ -70,6 +70,24 @@ Deno.test('GET / serves the main HTML page', async () => {
   assert(text.includes('<!DOCTYPE html>'), 'Expected HTML body');
 });
 
+Deno.test('GET vendored JS modules serves JavaScript module content type', async () => {
+  const app = createApp({
+    client: new FakeOllamaClient(),
+    staticDir: createStaticDir(),
+  });
+
+  const response = await makeRequest(
+    app,
+    '/static/vendor/preact.module.js',
+  );
+
+  assertEquals(response.status, 200);
+  assert(
+    response.headers.get('content-type')?.includes('application/javascript'),
+    'Expected JavaScript module content type',
+  );
+});
+
 Deno.test('GET /api/v1/auth-required reports false when no API key is configured', async () => {
   const app = createApp({ client: new FakeOllamaClient() });
   const response = await makeRequest(app, '/api/v1/auth-required');

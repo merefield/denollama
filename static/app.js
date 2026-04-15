@@ -1,14 +1,19 @@
 import {
-  html,
+  h,
   render,
+} from './vendor/preact.module.js';
+import {
   useEffect,
   useMemo,
   useRef,
   useState,
-} from 'https://esm.sh/htm/preact/standalone';
+} from './vendor/preact-hooks.module.js';
+import htm from './vendor/htm.module.js';
+import { marked } from './vendor/marked.esm.js';
 
 const API_KEY_STORAGE_KEY = 'llm-api-key';
 const CHAT_STORAGE_KEY = 'llm-chats';
+const html = htm.bind(h);
 
 function createEmptyChat(overrides = {}) {
   return {
@@ -151,7 +156,7 @@ function upsertChat(chats, chat) {
 
 function markdownToHtml(content) {
   return {
-    __html: globalThis.marked?.parse?.(content) ?? content,
+    __html: marked.parse(content),
   };
 }
 

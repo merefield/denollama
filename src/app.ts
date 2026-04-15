@@ -7,6 +7,7 @@ const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
 };
 
 export interface AppOptions {
@@ -21,7 +22,7 @@ export function createApp(options: AppOptions = {}) {
   const staticDir = options.staticDir ?? DEFAULT_STATIC_DIR;
 
   return {
-    fetch(request: Request): Promise<Response> {
+    fetch(request: Request): Response | Promise<Response> {
       return handleRequest(request, { apiKey, client, staticDir });
     },
   };
@@ -36,7 +37,7 @@ interface AppDeps {
 function handleRequest(
   request: Request,
   deps: AppDeps,
-): Promise<Response> {
+): Response | Promise<Response> {
   const url = new URL(request.url);
 
   if (url.pathname === '/') {
