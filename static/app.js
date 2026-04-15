@@ -703,7 +703,7 @@ function Sidebar(
       </div>
 
       <div class="model-selector">
-        <label for="model-select">Model:</label>
+        <h3 class="sidebar-section-title">Model</h3>
         <select
           id="model-select"
           value="${selectedModel}"
@@ -735,7 +735,7 @@ function Sidebar(
       </button>
 
       <div class="chat-history">
-        <h3>Previous Chats</h3>
+        <h3 class="sidebar-section-title">Previous Chats</h3>
         <div id="previous-chats">
           ${chats.length === 0
             ? html`
@@ -780,6 +780,7 @@ function Sidebar(
       </div>
 
       <div class="sidebar-footer">
+        <h3 class="sidebar-section-title">Settings</h3>
         <label class="sidebar-toggle">
           <input
             type="checkbox"
