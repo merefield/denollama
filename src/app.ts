@@ -1,4 +1,9 @@
-import { HttpOllamaClient, OllamaClient, OllamaClientError } from './ollama.ts';
+import {
+  HttpOllamaClient,
+  ModelInfo,
+  OllamaClient,
+  OllamaClientError,
+} from './ollama.ts';
 
 const DEFAULT_STATIC_DIR = new URL('../static/', import.meta.url);
 const DEFAULT_OLLAMA_HOST = 'http://localhost:11434';
@@ -61,6 +66,10 @@ function handleRequest(
     return handleResponseRequest(request, deps);
   }
 
+  if (url.pathname === '/api/v1/transcribe') {
+    return handleTranscribeRequest(request, deps);
+  }
+
   return new Response('Not Found', { status: 404 });
 }
 
@@ -82,9 +91,22 @@ async function handleModelsRequest(
     const models = Array.isArray(modelsResponse.models)
       ? modelsResponse.models.map((model) => model.model)
       : [];
+    const modelDetails = await Promise.all(
+      models.map((model) =>
+        deps.client.show({ model }).catch((): ModelInfo => ({
+          model,
+          capabilities: [],
+        }))
+      ),
+    );
+    const transcriptionModels = modelDetails
+      .filter((model) => model.capabilities?.includes('audio'))
+      .map((model) => model.model);
 
     return jsonResponse({
       models,
+      model_details: modelDetails,
+      transcription_models: transcriptionModels,
       count: models.length,
     });
   } catch (error) {
@@ -170,6 +192,62 @@ async function handleResponseRequest(
   }
 }
 
+async function handleTranscribeRequest(
+  request: Request,
+  deps: AppDeps,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return methodNotAllowed(['POST']);
+  }
+
+  const unauthorized = requireApiKey(request, deps.apiKey);
+  if (unauthorized) {
+    return unauthorized;
+  }
+
+  let data: Record<string, unknown>;
+
+  try {
+    data = await request.json();
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON data provided' }, 400);
+  }
+
+  if (!data || Object.keys(data).length === 0) {
+    return jsonResponse({ error: 'No JSON data provided' }, 400);
+  }
+
+  const model = typeof data.model === 'string' ? data.model : undefined;
+  const audio = typeof data.audio === 'string' ? data.audio : undefined;
+  const format = typeof data.format === 'string' ? data.format : 'wav';
+
+  if (!model) {
+    return jsonResponse({ error: "Missing 'model' field" }, 400);
+  }
+
+  if (!audio) {
+    return jsonResponse({ error: "Missing 'audio' field" }, 400);
+  }
+
+  if (!['wav', 'mp3'].includes(format)) {
+    return jsonResponse({ error: "Unsupported 'format' field" }, 400);
+  }
+
+  try {
+    const transcription = await deps.client.transcribe({
+      model,
+      audio,
+      format,
+    });
+    return jsonResponse({
+      transcription: transcription.trim(),
+      model,
+    });
+  } catch (error) {
+    return handleApiError(error);
+  }
+}
+
 function streamChatResponse(
   model: string,
   messages: Array<{ role: string; content: string }>,
@@ -194,7 +272,9 @@ function streamChatResponse(
           if (chunk.done) {
             controller.enqueue(
               encoder.encode(
-                `${JSON.stringify({ done: true, response: accumulated, model })}\n`,
+                `${
+                  JSON.stringify({ done: true, response: accumulated, model })
+                }\n`,
               ),
             );
           }

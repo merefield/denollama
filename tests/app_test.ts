@@ -11,18 +11,30 @@ import { assert, assertEquals, assertJson } from './helpers.ts';
 class FakeOllamaClient implements OllamaClient {
   chatCalls: Array<{ model: string; messages: ChatMessage[] }> = [];
   chatStreamCalls: Array<{ model: string; messages: ChatMessage[] }> = [];
+  transcribeCalls: Array<{ model: string; audio: string; format: string }> = [];
+  showCalls: Array<{ model: string }> = [];
   listCalls = 0;
   chatResult = 'This is a test response';
+  transcribeResult = 'spoken words';
   streamChunks: ChatStreamChunk[] = [
     { message: { content: 'This ' } },
     { message: { content: 'streams' } },
     { done: true },
   ];
   listResult: ModelListResponse = {
-    models: [{ model: 'llama2' }, { model: 'mistral' }],
+    models: [{ model: 'llama2' }, { model: 'gemma4:latest' }],
+  };
+  showResults: Record<string, { model: string; capabilities: string[] }> = {
+    llama2: { model: 'llama2', capabilities: ['completion'] },
+    'gemma4:latest': {
+      model: 'gemma4:latest',
+      capabilities: ['completion', 'audio'],
+    },
   };
   chatError: Error | null = null;
   chatStreamError: Error | null = null;
+  transcribeError: Error | null = null;
+  showError: Error | null = null;
   listError: Error | null = null;
 
   chat(input: { model: string; messages: ChatMessage[] }) {
@@ -56,6 +68,29 @@ class FakeOllamaClient implements OllamaClient {
     }
 
     return Promise.resolve(this.listResult);
+  }
+
+  show(input: { model: string }) {
+    this.showCalls.push(input);
+    if (this.showError) {
+      return Promise.reject(this.showError);
+    }
+
+    return Promise.resolve(
+      this.showResults[input.model] ?? {
+        model: input.model,
+        capabilities: [],
+      },
+    );
+  }
+
+  transcribe(input: { model: string; audio: string; format: string }) {
+    this.transcribeCalls.push(input);
+    if (this.transcribeError) {
+      return Promise.reject(this.transcribeError);
+    }
+
+    return Promise.resolve(this.transcribeResult);
   }
 }
 
@@ -133,10 +168,22 @@ Deno.test('GET /api/v1/models returns available models', async () => {
   const body = await assertJson(response, 200);
 
   assertEquals(body, {
-    models: ['llama2', 'mistral'],
+    models: ['llama2', 'gemma4:latest'],
+    model_details: [
+      { model: 'llama2', capabilities: ['completion'] },
+      {
+        model: 'gemma4:latest',
+        capabilities: ['completion', 'audio'],
+      },
+    ],
+    transcription_models: ['gemma4:latest'],
     count: 2,
   });
   assertEquals(client.listCalls, 1);
+  assertEquals(client.showCalls, [
+    { model: 'llama2' },
+    { model: 'gemma4:latest' },
+  ]);
 });
 
 Deno.test('GET /api/v1/models enforces API key when configured', async () => {
@@ -402,6 +449,76 @@ Deno.test('GET /api/v1/models surfaces Ollama errors', async () => {
   });
 });
 
+Deno.test('POST /api/v1/transcribe validates model and audio fields', async () => {
+  const app = createApp({ client: new FakeOllamaClient() });
+
+  const missingModel = await makeRequest(app, '/api/v1/transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio: 'base64-audio' }),
+  });
+  assertEquals(await assertJson(missingModel, 400), {
+    error: "Missing 'model' field",
+  });
+
+  const missingAudio = await makeRequest(app, '/api/v1/transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'gemma4:e4b' }),
+  });
+  assertEquals(await assertJson(missingAudio, 400), {
+    error: "Missing 'audio' field",
+  });
+});
+
+Deno.test('POST /api/v1/transcribe returns transcription text', async () => {
+  const client = new FakeOllamaClient();
+  client.transcribeResult = ' hello world ';
+  const app = createApp({ client });
+
+  const response = await makeRequest(app, '/api/v1/transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gemma4:e4b',
+      audio: 'base64-audio',
+      format: 'wav',
+    }),
+  });
+
+  assertEquals(await assertJson(response, 200), {
+    transcription: 'hello world',
+    model: 'gemma4:e4b',
+  });
+  assertEquals(client.transcribeCalls, [{
+    model: 'gemma4:e4b',
+    audio: 'base64-audio',
+    format: 'wav',
+  }]);
+});
+
+Deno.test('POST /api/v1/transcribe enforces API key when configured', async () => {
+  const client = new FakeOllamaClient();
+  const app = createApp({
+    apiKey: 'secret-key',
+    client,
+  });
+
+  const response = await makeRequest(app, '/api/v1/transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gemma4:e4b',
+      audio: 'base64-audio',
+    }),
+  });
+
+  assertEquals(await assertJson(response, 401), {
+    error: 'Invalid or missing API key',
+  });
+  assertEquals(client.transcribeCalls.length, 0);
+});
+
 Deno.test('unsupported methods return 405 for API routes', async () => {
   const app = createApp({ client: new FakeOllamaClient() });
 
@@ -414,4 +531,9 @@ Deno.test('unsupported methods return 405 for API routes', async () => {
     method: 'GET',
   });
   assertEquals(chatResponse.status, 405);
+
+  const transcribeResponse = await makeRequest(app, '/api/v1/transcribe', {
+    method: 'GET',
+  });
+  assertEquals(transcribeResponse.status, 405);
 });

@@ -1,7 +1,4 @@
-import {
-  h,
-  render,
-} from './vendor/preact.module.js';
+import { h, render } from './vendor/preact.module.js';
 import {
   useEffect,
   useMemo,
@@ -14,21 +11,23 @@ import { marked } from './vendor/marked.esm.js';
 const API_KEY_STORAGE_KEY = 'llm-api-key';
 const CHAT_STORAGE_KEY = 'llm-chats';
 const STREAMING_STORAGE_KEY = 'llm-streaming-enabled';
+const AUTO_SEND_TRANSCRIPT_STORAGE_KEY = 'llm-auto-send-transcript';
 const SYSTEM_PROMPT_STORAGE_KEY = 'llm-system-prompt';
 const html = htm.bind(h);
 const MATH_PLACEHOLDER_PREFIX = '@@MATHJAX_PLACEHOLDER_';
 const DISPLAY_MATH_PATTERN = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]/g;
 const DISPLAY_ENV_NAMES =
   'align\\*?|aligned|array|bmatrix|Bmatrix|cases|matrix|pmatrix|smallmatrix|vmatrix|Vmatrix|gather\\*?|gathered|equation\\*?|multline\\*?';
-const SELF_DISPLAY_ENV_NAMES =
-  'align\\*?|gather\\*?|equation\\*?|multline\\*?';
+const SELF_DISPLAY_ENV_NAMES = 'align\\*?|gather\\*?|equation\\*?|multline\\*?';
 const BARE_DISPLAY_ENV_PATTERN = new RegExp(
-  String.raw`\\begin\{(${DISPLAY_ENV_NAMES})\}(?:\{[^{}]*\})?[\s\S]+?\\end\{\1\}`,
+  String
+    .raw`\\begin\{(${DISPLAY_ENV_NAMES})\}(?:\{[^{}]*\})?[\s\S]+?\\end\{\1\}`,
   'g',
 );
 const INLINE_MATH_PATTERN =
   /\\\([\s\S]+?\\\)|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$/g;
-const DEFAULT_SYSTEM_PROMPT = `Be concise, technically accurate, and use clean Markdown.
+const DEFAULT_SYSTEM_PROMPT =
+  `Be concise, technically accurate, and use clean Markdown.
 
 For math:
 - Use inline math only for short expressions inside sentences.
@@ -43,6 +42,20 @@ const COPY_BUTTON_ICON = `
     <path d="M6 4h9v2H8v9H6z"></path>
   </svg>
 `;
+const MIC_BUTTON_ICON = `
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"></path>
+    <path d="M19 11a7 7 0 0 1-14 0"></path>
+    <path d="M12 18v4"></path>
+    <path d="M8 22h8"></path>
+  </svg>
+`;
+const STOP_BUTTON_ICON = `
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M7 7h10v10H7z"></path>
+  </svg>
+`;
+const TRANSCRIPTION_PREROLL_SECONDS = 0.5;
 let mathTypesetQueue = Promise.resolve();
 const pendingMathContainers = new Set();
 
@@ -105,6 +118,98 @@ async function fetchJson(path, options = {}) {
   return { response, data };
 }
 
+function blobToArrayBuffer(blob) {
+  return blob.arrayBuffer();
+}
+
+async function audioBlobToWavBase64(blob) {
+  const AudioContextConstructor = globalThis.AudioContext ||
+    globalThis.webkitAudioContext;
+  if (!AudioContextConstructor) {
+    throw new Error('Audio recording is not supported in this browser');
+  }
+
+  const audioContext = new AudioContextConstructor();
+  try {
+    const sourceBuffer = await blobToArrayBuffer(blob);
+    const audioBuffer = await audioContext.decodeAudioData(sourceBuffer);
+    const wavBuffer = encodeWav(audioBuffer, {
+      leadingSilenceSeconds: TRANSCRIPTION_PREROLL_SECONDS,
+    });
+    return arrayBufferToBase64(wavBuffer);
+  } finally {
+    await audioContext.close();
+  }
+}
+
+function encodeWav(audioBuffer, { leadingSilenceSeconds = 0 } = {}) {
+  const sampleRate = audioBuffer.sampleRate;
+  const channelData = audioBuffer.getChannelData(0);
+  const leadingSamples = Math.round(sampleRate * leadingSilenceSeconds);
+  const totalSamples = leadingSamples + channelData.length;
+  const bytesPerSample = 2;
+  const wavBuffer = new ArrayBuffer(44 + totalSamples * bytesPerSample);
+  const view = new DataView(wavBuffer);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + totalSamples * bytesPerSample, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, 8 * bytesPerSample, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, totalSamples * bytesPerSample, true);
+
+  let offset = 44;
+  offset += leadingSamples * bytesPerSample;
+
+  for (const sample of channelData) {
+    const clamped = Math.max(-1, Math.min(1, sample));
+    view.setInt16(
+      offset,
+      clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff,
+      true,
+    );
+    offset += bytesPerSample;
+  }
+
+  return wavBuffer;
+}
+
+function writeAscii(view, offset, text) {
+  for (let index = 0; index < text.length; index += 1) {
+    view.setUint8(offset + index, text.charCodeAt(index));
+  }
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
+function isEditableElement(element) {
+  if (!element) {
+    return false;
+  }
+
+  const tagName = element.tagName?.toLowerCase();
+  return tagName === 'input' || tagName === 'textarea' ||
+    tagName === 'select' || element.isContentEditable;
+}
+
 function readStreamingPreference() {
   const stored = localStorage.getItem(STREAMING_STORAGE_KEY);
   return stored === null ? true : stored !== 'false';
@@ -112,6 +217,14 @@ function readStreamingPreference() {
 
 function writeStreamingPreference(enabled) {
   localStorage.setItem(STREAMING_STORAGE_KEY, String(enabled));
+}
+
+function readAutoSendTranscriptPreference() {
+  return localStorage.getItem(AUTO_SEND_TRANSCRIPT_STORAGE_KEY) === 'true';
+}
+
+function writeAutoSendTranscriptPreference(enabled) {
+  localStorage.setItem(AUTO_SEND_TRANSCRIPT_STORAGE_KEY, String(enabled));
 }
 
 function readSystemPrompt() {
@@ -336,7 +449,11 @@ function restoreMathExpressions(htmlContent, placeholders) {
     }
 
     const displayReplacement = toDisplayMathExpression(entry.expression);
-    return replaceParagraphPlaceholder(result, entry.placeholder, displayReplacement)
+    return replaceParagraphPlaceholder(
+      result,
+      entry.placeholder,
+      displayReplacement,
+    )
       .split(entry.placeholder)
       .join(entry.expression);
   }, htmlContent);
@@ -350,9 +467,14 @@ function markdownToHtml(content) {
   };
 }
 
+function rawHtml(content) {
+  return { __html: content };
+}
+
 function containsRenderableMath(content) {
   return new RegExp(
-    String.raw`(?:\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\\begin\{(?:${DISPLAY_ENV_NAMES})\}(?:\{[^{}]*\})?[\s\S]+?\\end\{(?:${DISPLAY_ENV_NAMES})\}|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$)`,
+    String
+      .raw`(?:\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\\begin\{(?:${DISPLAY_ENV_NAMES})\}(?:\{[^{}]*\})?[\s\S]+?\\end\{(?:${DISPLAY_ENV_NAMES})\}|(?<!\\)\$(?!\$)(?:\\.|[^$\n\\])+(?<!\\)\$)`,
     'm',
   )
     .test(content);
@@ -571,13 +693,17 @@ function buildMarkdownExport(chat) {
 }
 
 function buildJsonExport(chat) {
-  return JSON.stringify({
-    title: chat.title || deriveChatTitle(chat),
-    model: chat.model || null,
-    timestamp: chat.timestamp || null,
-    exported_at: new Date().toISOString(),
-    messages: chat.messages,
-  }, null, 2);
+  return JSON.stringify(
+    {
+      title: chat.title || deriveChatTitle(chat),
+      model: chat.model || null,
+      timestamp: chat.timestamp || null,
+      exported_at: new Date().toISOString(),
+      messages: chat.messages,
+    },
+    null,
+    2,
+  );
 }
 
 function downloadTextFile(filename, content, mimeType) {
@@ -623,7 +749,8 @@ function Message({ message, shouldTypesetMath }) {
           />
         `
         : html`
-          <div ref="${contentRef}" class="message-content">${message.content}</div>
+          <div ref="${contentRef}" class="message-content">${message
+            .content}</div>
         `}
     </div>
   `;
@@ -681,11 +808,16 @@ function Sidebar(
     chats,
     currentChatId,
     availableModels,
+    availableTranscriptionModels,
     selectedModel,
+    selectedTranscriptionModel,
     streamingEnabled,
+    autoSendTranscript,
     status,
     onSelectModel,
+    onSelectTranscriptionModel,
     onStreamingToggle,
+    onAutoSendTranscriptToggle,
     onOpenSystemPromptDialog,
     onNewChat,
     onLoadChat,
@@ -694,6 +826,8 @@ function Sidebar(
 ) {
   const selectorDisabled = status.kind !== 'normal' ||
     availableModels.length === 0;
+  const transcriptionSelectorDisabled = status.kind !== 'normal' ||
+    availableTranscriptionModels.length === 0;
 
   return html`
     <aside class="sidebar">
@@ -703,7 +837,7 @@ function Sidebar(
       </div>
 
       <div class="model-selector">
-        <h3 class="sidebar-section-title">Model</h3>
+        <h3 class="sidebar-section-title">Chat Model</h3>
         <select
           id="model-select"
           value="${selectedModel}"
@@ -723,6 +857,35 @@ function Sidebar(
               <option value="">Loading...</option>
             `
             : availableModels.map((model) =>
+              html`
+                <option value="${model}">${model}</option>
+              `
+            )}
+        </select>
+      </div>
+
+      <div class="model-selector">
+        <h3 class="sidebar-section-title">Transcription</h3>
+        <select
+          id="transcription-model-select"
+          value="${selectedTranscriptionModel}"
+          onChange="${(event) =>
+            onSelectTranscriptionModel(event.currentTarget.value)}"
+          disabled="${transcriptionSelectorDisabled}"
+        >
+          ${status.kind === 'ollama-error'
+            ? html`
+              <option value="">Ollama not available</option>
+            `
+            : status.kind === 'no-models'
+            ? html`
+              <option value="">No models available</option>
+            `
+            : availableTranscriptionModels.length === 0
+            ? html`
+              <option value="">No audio models</option>
+            `
+            : availableTranscriptionModels.map((model) =>
               html`
                 <option value="${model}">${model}</option>
               `
@@ -793,6 +956,18 @@ function Sidebar(
             <small>Stream replies as they arrive</small>
           </div>
         </label>
+        <label class="sidebar-toggle">
+          <input
+            type="checkbox"
+            checked="${autoSendTranscript}"
+            onChange="${(event) =>
+              onAutoSendTranscriptToggle(event.currentTarget.checked)}"
+          />
+          <div class="sidebar-toggle-text">
+            <span>Auto-send Dictation</span>
+            <small>Send transcript after recording stops</small>
+          </div>
+        </label>
         <button
           type="button"
           class="sidebar-secondary-btn"
@@ -820,10 +995,18 @@ function ConfirmDialog(
         <h2 id="dialog-title">${title}</h2>
         <p class="dialog-message">${message}</p>
         <div class="dialog-actions">
-          <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onCancel}">
+          <button
+            type="button"
+            class="dialog-btn dialog-btn-secondary"
+            onClick="${onCancel}"
+          >
             ${cancelLabel}
           </button>
-          <button type="button" class="dialog-btn dialog-btn-danger" onClick="${onConfirm}">
+          <button
+            type="button"
+            class="dialog-btn dialog-btn-danger"
+            onClick="${onConfirm}"
+          >
             ${confirmLabel}
           </button>
         </div>
@@ -860,10 +1043,18 @@ function ExportDialog(
           </select>
         </label>
         <div class="dialog-actions">
-          <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onCancel}">
+          <button
+            type="button"
+            class="dialog-btn dialog-btn-secondary"
+            onClick="${onCancel}"
+          >
             Cancel
           </button>
-          <button type="button" class="dialog-btn dialog-btn-primary" onClick="${onConfirm}">
+          <button
+            type="button"
+            class="dialog-btn dialog-btn-primary"
+            onClick="${onConfirm}"
+          >
             Export
           </button>
         </div>
@@ -886,7 +1077,8 @@ function SystemPromptDialog(
       >
         <h2 id="system-prompt-dialog-title">System prompt</h2>
         <p class="dialog-message">
-          This prompt is prepended to chat requests before recent conversation context.
+          This prompt is prepended to chat requests before recent conversation
+          context.
         </p>
         <label class="dialog-field" for="system-prompt-input">
           <span>Prompt</span>
@@ -899,14 +1091,26 @@ function SystemPromptDialog(
           ></textarea>
         </label>
         <div class="dialog-actions dialog-actions-spread">
-          <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onResetDefault}">
+          <button
+            type="button"
+            class="dialog-btn dialog-btn-secondary"
+            onClick="${onResetDefault}"
+          >
             Revert to default
           </button>
           <div class="dialog-actions-group">
-            <button type="button" class="dialog-btn dialog-btn-secondary" onClick="${onCancel}">
+            <button
+              type="button"
+              class="dialog-btn dialog-btn-secondary"
+              onClick="${onCancel}"
+            >
               Cancel
             </button>
-            <button type="button" class="dialog-btn dialog-btn-primary" onClick="${onConfirm}">
+            <button
+              type="button"
+              class="dialog-btn dialog-btn-primary"
+              onClick="${onConfirm}"
+            >
               Save
             </button>
           </div>
@@ -957,12 +1161,16 @@ function ChatArea(
     isLoading,
     prompt,
     inputDisabled,
+    canDictate,
+    dictationStatus,
+    dictationError,
     status,
     retryPending,
     onRetry,
     onPromptChange,
     onPromptKeyDown,
     onSendMessage,
+    onToggleDictation,
     onOpenExportDialog,
   },
 ) {
@@ -1045,7 +1253,9 @@ function ChatArea(
       html`
         <${Message}
           key="${message.role === 'assistant' && index === lastAssistantIndex
-            ? `${index}-${message.role}-${message.streaming ? 'streaming' : 'final'}`
+            ? `${index}-${message.role}-${
+              message.streaming ? 'streaming' : 'final'
+            }`
             : `${index}-${message.role}`}"
           message="${message}"
           shouldTypesetMath="${index === lastAssistantIndex}"
@@ -1086,14 +1296,52 @@ function ChatArea(
           onKeyDown="${onPromptKeyDown}"
           disabled="${inputDisabled}"
         ></textarea>
-        <button
-          id="send-btn"
-          class="send-btn"
-          onClick="${onSendMessage}"
-          disabled="${inputDisabled}"
-        >
-          ${isLoading ? 'Sending...' : 'Send'}
-        </button>
+        <div class="input-actions">
+          ${canDictate
+            ? html`
+              <button
+                type="button"
+                id="dictate-btn"
+                class="dictate-btn ${dictationStatus === 'recording'
+                  ? 'dictate-btn-recording'
+                  : ''}"
+                title="${dictationStatus === 'recording'
+                  ? 'Stop dictation'
+                  : 'Start dictation'}"
+                aria-label="${dictationStatus === 'recording'
+                  ? 'Stop dictation'
+                  : 'Start dictation'}"
+                onClick="${onToggleDictation}"
+                disabled="${dictationStatus === 'starting' ||
+                  dictationStatus === 'transcribing' ||
+                  (inputDisabled && dictationStatus !== 'recording')}"
+              >
+                <span
+                  dangerouslySetInnerHTML="${dictationStatus === 'recording'
+                    ? rawHtml(STOP_BUTTON_ICON)
+                    : rawHtml(MIC_BUTTON_ICON)}"
+                ></span>
+              </button>
+            `
+            : null}
+          <button
+            id="send-btn"
+            class="send-btn ${canDictate ? '' : 'send-btn-wide'}"
+            onClick="${onSendMessage}"
+            disabled="${inputDisabled || dictationStatus !== 'idle'}"
+          >
+            ${isLoading ? 'Sending...' : 'Send'}
+          </button>
+        </div>
+        <div class="dictation-status" role="status">
+          ${dictationStatus === 'starting'
+            ? 'Starting...'
+            : dictationStatus === 'recording'
+            ? 'Listening...'
+            : dictationStatus === 'transcribing'
+            ? 'Transcribing...'
+            : dictationError}
+        </div>
       </div>
     </main>
   `;
@@ -1108,10 +1356,18 @@ function App() {
   const [chats, setChats] = useState([]);
   const [currentChat, setCurrentChat] = useState(createEmptyChat());
   const [availableModels, setAvailableModels] = useState([]);
+  const [availableTranscriptionModels, setAvailableTranscriptionModels] =
+    useState([]);
   const [selectedModel, setSelectedModel] = useState('');
+  const [selectedTranscriptionModel, setSelectedTranscriptionModel] = useState(
+    '',
+  );
   const [prompt, setPrompt] = useState('');
   const [streamingEnabled, setStreamingEnabled] = useState(() =>
     readStreamingPreference()
+  );
+  const [autoSendTranscript, setAutoSendTranscript] = useState(() =>
+    readAutoSendTranscriptPreference()
   );
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState({ kind: 'normal', message: '' });
@@ -1122,6 +1378,11 @@ function App() {
   const [systemPrompt, setSystemPrompt] = useState(() => readSystemPrompt());
   const [systemPromptDraft, setSystemPromptDraft] = useState('');
   const [systemPromptDialogOpen, setSystemPromptDialogOpen] = useState(false);
+  const [dictationStatus, setDictationStatus] = useState('idle');
+  const [dictationError, setDictationError] = useState('');
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const audioStreamRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1167,6 +1428,35 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      mediaRecorderRef.current?.stop();
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleGlobalSpaceKey(event) {
+      if (
+        event.code !== 'Space' || event.repeat ||
+        isEditableElement(document.activeElement) ||
+        dictationStatus === 'starting' ||
+        dictationStatus === 'transcribing' ||
+        !selectedTranscriptionModel || status.kind !== 'normal'
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      handleToggleDictation();
+    }
+
+    document.addEventListener('keydown', handleGlobalSpaceKey);
+    return () => {
+      document.removeEventListener('keydown', handleGlobalSpaceKey);
+    };
+  }, [dictationStatus, selectedTranscriptionModel, status.kind]);
+
   const inputDisabled = useMemo(() => {
     return isLoading || status.kind !== 'normal' ||
       availableModels.length === 0;
@@ -1188,24 +1478,32 @@ function App() {
 
       if (data.error) {
         setAvailableModels([]);
+        setAvailableTranscriptionModels([]);
         setStatus({ kind: 'ollama-error', message: data.error });
         if (!preserveSelection) {
           setSelectedModel('');
+          setSelectedTranscriptionModel('');
         }
         return false;
       }
 
       const models = Array.isArray(data.models) ? data.models : [];
+      const transcriptionModels = Array.isArray(data.transcription_models)
+        ? data.transcription_models
+        : [];
       if (models.length === 0) {
         setAvailableModels([]);
+        setAvailableTranscriptionModels([]);
         setStatus({ kind: 'no-models', message: '' });
         if (!preserveSelection) {
           setSelectedModel('');
+          setSelectedTranscriptionModel('');
         }
         return false;
       }
 
       setAvailableModels(models);
+      setAvailableTranscriptionModels(transcriptionModels);
       setStatus({ kind: 'normal', message: '' });
       setSelectedModel((currentSelection) => {
         if (
@@ -1221,10 +1519,22 @@ function App() {
 
         return models[0];
       });
+      setSelectedTranscriptionModel((currentSelection) => {
+        if (
+          preserveSelection && currentSelection &&
+          transcriptionModels.includes(currentSelection)
+        ) {
+          return currentSelection;
+        }
+
+        return transcriptionModels[0] ?? '';
+      });
       return true;
     } catch (error) {
       console.error('Error loading models:', error);
       setAvailableModels([]);
+      setAvailableTranscriptionModels([]);
+      setSelectedTranscriptionModel('');
       setStatus({
         kind: 'ollama-error',
         message: 'Failed to connect to server',
@@ -1424,12 +1734,149 @@ function App() {
     };
   }
 
-  async function handleSendMessage() {
-    const trimmedPrompt = prompt.trim();
+  async function transcribeAudio(audio) {
+    const response = await fetch('/api/v1/transcribe', {
+      method: 'POST',
+      headers: getApiHeaders(apiKey, true),
+      body: JSON.stringify({
+        model: selectedTranscriptionModel,
+        audio,
+        format: 'wav',
+      }),
+    });
+    const data = await response.clone().json().catch(() => ({}));
+
+    if (response.status === 401) {
+      handleUnauthorized('Session expired. Please enter your API key again.');
+      return '';
+    }
+
+    if (response.status === 404) {
+      throw new Error(
+        'Transcription endpoint is not available. Restart deno task dev.',
+      );
+    }
+
+    if (!response.ok) {
+      const fallbackError = await response.text().catch(() => '');
+      throw new Error(
+        data.error || fallbackError || 'Unable to transcribe audio',
+      );
+    }
+
+    return typeof data.transcription === 'string'
+      ? data.transcription.trim()
+      : '';
+  }
+
+  async function handleToggleDictation() {
+    if (dictationStatus === 'recording') {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+
+    if (
+      dictationStatus !== 'idle' || !selectedTranscriptionModel ||
+      status.kind !== 'normal'
+    ) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || !globalThis.MediaRecorder) {
+      setDictationError(
+        'Microphone recording is not supported in this browser',
+      );
+      return;
+    }
+
+    setDictationError('');
+    setDictationStatus('starting');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+      const recorder = new MediaRecorder(stream);
+      recordedChunksRef.current = [];
+      audioStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstart = () => {
+        setDictationStatus('recording');
+      };
+
+      recorder.onstop = async () => {
+        const chunks = recordedChunksRef.current;
+        recordedChunksRef.current = [];
+        stream.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+        mediaRecorderRef.current = null;
+
+        if (chunks.length === 0) {
+          setDictationStatus('idle');
+          setDictationError('No audio was recorded');
+          return;
+        }
+
+        setDictationStatus('transcribing');
+
+        try {
+          const audioBlob = new Blob(chunks, { type: recorder.mimeType });
+          const audio = await audioBlobToWavBase64(audioBlob);
+          const transcription = await transcribeAudio(audio);
+
+          if (transcription) {
+            if (autoSendTranscript) {
+              setPrompt('');
+              await sendPrompt(transcription);
+            } else {
+              setPrompt((currentPrompt) => {
+                const separator = currentPrompt &&
+                    !/\s$/.test(currentPrompt)
+                  ? ' '
+                  : '';
+                return `${currentPrompt}${separator}${transcription}`;
+              });
+            }
+            setDictationError('');
+          } else {
+            setDictationError('No speech was transcribed');
+          }
+        } catch (error) {
+          console.error('Error transcribing audio:', error);
+          setDictationError(error.message || 'Unable to transcribe audio');
+        } finally {
+          setDictationStatus('idle');
+        }
+      };
+
+      recorder.start();
+    } catch (error) {
+      console.error('Error starting dictation:', error);
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      audioStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      setDictationStatus('idle');
+      setDictationError(error.message || 'Unable to access microphone');
+    }
+  }
+
+  async function sendPrompt(promptText) {
+    const trimmedPrompt = promptText.trim();
     if (
       !trimmedPrompt || !selectedModel || isLoading || status.kind !== 'normal'
     ) {
-      return;
+      return false;
     }
 
     const isFirstMessage = currentChat.messages.length === 0;
@@ -1456,7 +1903,7 @@ function App() {
         );
 
       if (!nextChat) {
-        return;
+        return false;
       }
 
       if (isFirstMessage) {
@@ -1482,6 +1929,12 @@ function App() {
     } finally {
       setIsLoading(false);
     }
+
+    return true;
+  }
+
+  async function handleSendMessage() {
+    await sendPrompt(prompt);
   }
 
   function handleNewChat() {
@@ -1609,6 +2062,25 @@ function App() {
   }
 
   function handlePromptKeyDown(event) {
+    if (
+      event.code === 'Space' && !event.repeat &&
+      event.currentTarget.value.trim().length === 0 &&
+      (dictationStatus === 'idle' || dictationStatus === 'recording') &&
+      selectedTranscriptionModel && status.kind === 'normal'
+    ) {
+      event.preventDefault();
+      handleToggleDictation();
+      return;
+    }
+
+    if (
+      event.code === 'Space' && event.repeat &&
+      event.currentTarget.value.trim().length === 0
+    ) {
+      event.preventDefault();
+      return;
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       handleSendMessage();
@@ -1651,13 +2123,21 @@ function App() {
         chats="${chats}"
         currentChatId="${currentChat.id}"
         availableModels="${availableModels}"
+        availableTranscriptionModels="${availableTranscriptionModels}"
         selectedModel="${selectedModel}"
+        selectedTranscriptionModel="${selectedTranscriptionModel}"
         streamingEnabled="${streamingEnabled}"
+        autoSendTranscript="${autoSendTranscript}"
         status="${status}"
         onSelectModel="${setSelectedModel}"
+        onSelectTranscriptionModel="${setSelectedTranscriptionModel}"
         onStreamingToggle="${(enabled) => {
           setStreamingEnabled(enabled);
           writeStreamingPreference(enabled);
+        }}"
+        onAutoSendTranscriptToggle="${(enabled) => {
+          setAutoSendTranscript(enabled);
+          writeAutoSendTranscriptPreference(enabled);
         }}"
         onOpenSystemPromptDialog="${handleOpenSystemPromptDialog}"
         onNewChat="${handleNewChat}"
@@ -1669,12 +2149,17 @@ function App() {
         isLoading="${isLoading}"
         prompt="${prompt}"
         inputDisabled="${inputDisabled}"
+        canDictate="${Boolean(selectedTranscriptionModel) &&
+          status.kind === 'normal'}"
+        dictationStatus="${dictationStatus}"
+        dictationError="${dictationError}"
         status="${status}"
         retryPending="${retryPending}"
         onRetry="${handleRetry}"
         onPromptChange="${setPrompt}"
         onPromptKeyDown="${handlePromptKeyDown}"
         onSendMessage="${handleSendMessage}"
+        onToggleDictation="${handleToggleDictation}"
         onOpenExportDialog="${handleOpenExportDialog}"
       />
       ${chatPendingDelete
@@ -1690,8 +2175,7 @@ function App() {
             onCancel="${handleCancelDeleteChat}"
           />
         `
-        : null}
-      ${exportDialogOpen
+        : null} ${exportDialogOpen
         ? html`
           <${ExportDialog}
             format="${exportFormat}"
@@ -1700,8 +2184,7 @@ function App() {
             onCancel="${handleCancelExport}"
           />
         `
-        : null}
-      ${systemPromptDialogOpen
+        : null} ${systemPromptDialogOpen
         ? html`
           <${SystemPromptDialog}
             value="${systemPromptDraft}"

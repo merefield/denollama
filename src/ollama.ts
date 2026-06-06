@@ -18,10 +18,17 @@ export interface ChatStreamChunk {
 
 export interface ModelInfo {
   model: string;
+  capabilities?: string[];
 }
 
 export interface ModelListResponse {
   models: ModelInfo[];
+}
+
+export interface TranscriptionInput {
+  model: string;
+  audio: string;
+  format: string;
 }
 
 export interface OllamaClient {
@@ -32,6 +39,8 @@ export interface OllamaClient {
     input: { model: string; messages: ChatMessage[] },
   ): AsyncIterable<ChatStreamChunk>;
   list(): Promise<ModelListResponse>;
+  show(input: { model: string }): Promise<ModelInfo>;
+  transcribe(input: TranscriptionInput): Promise<string>;
 }
 
 export class OllamaClientError extends Error {}
@@ -108,6 +117,69 @@ export class HttpOllamaClient implements OllamaClient {
 
     return { models };
   }
+
+  async show(input: { model: string }): Promise<ModelInfo> {
+    const response = await fetch(`${this.baseUrl}/api/show`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: input.model }),
+    });
+
+    if (!response.ok) {
+      throw new OllamaClientError(await readErrorMessage(response));
+    }
+
+    const data = await response.json();
+    return {
+      model: input.model,
+      capabilities: Array.isArray(data.capabilities)
+        ? data.capabilities.filter((capability: unknown) =>
+          typeof capability === 'string'
+        )
+        : [],
+    };
+  }
+
+  async transcribe(input: TranscriptionInput): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: input.model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Transcribe this audio exactly. Return only the spoken words, with no commentary.',
+              },
+              {
+                type: 'input_audio',
+                input_audio: {
+                  data: input.audio,
+                  format: input.format,
+                },
+              },
+            ],
+          },
+        ],
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new OllamaClientError(await readErrorMessage(response));
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content ?? '';
+  }
 }
 
 async function readErrorMessage(response: Response): Promise<string> {
@@ -115,6 +187,14 @@ async function readErrorMessage(response: Response): Promise<string> {
     const data = await response.json();
     if (typeof data?.error === 'string') {
       return data.error;
+    }
+
+    if (typeof data?.error?.message === 'string') {
+      return data.error.message;
+    }
+
+    if (typeof data?.message === 'string') {
+      return data.message;
     }
   } catch {
     // Fall through to status text.

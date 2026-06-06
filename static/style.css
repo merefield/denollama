@@ -828,9 +828,10 @@ body {
   border-top: 1px solid #e0e0e0;
   padding: 20px 30px;
   background-color: #fff;
-  display: flex;
-  gap: 12px;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px;
+  gap: 8px 12px;
+  align-items: end;
 }
 
 /* Narrow input area on wider screens */
@@ -843,7 +844,7 @@ body {
 }
 
 #user-input {
-  flex: 1;
+  grid-column: 1;
   padding: 12px;
   border: 1px solid #d0d0d0;
   border-radius: 8px;
@@ -858,7 +859,69 @@ body {
   border-color: #0084ff;
 }
 
+.input-actions {
+  width: 88px;
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.dictate-btn {
+  width: 100%;
+  height: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  background-color: #fff;
+  color: #333;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.dictate-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dictate-btn:hover:not(:disabled) {
+  background-color: #f3f3f3;
+  border-color: #bcbcbc;
+}
+
+.dictate-btn-recording {
+  border-color: #d32f2f;
+  background-color: #fff4f4;
+  color: #d32f2f;
+}
+
+.dictate-btn:disabled {
+  background-color: #f7f7f7;
+  color: #999;
+  cursor: not-allowed;
+}
+
+.dictation-status {
+  grid-column: 1;
+  min-height: 18px;
+  padding: 0 12px;
+  color: #666;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+}
+
 .send-btn {
+  height: 44px;
   padding: 12px 24px;
   background-color: #0084ff;
   color: white;
@@ -878,6 +941,10 @@ body {
 .send-btn:disabled {
   background-color: #ccc;
   cursor: not-allowed;
+}
+
+.send-btn-wide {
+  width: 100%;
 }
 
 /* Scrollbar Styles */
