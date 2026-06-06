@@ -44,6 +44,7 @@ A clean, mobile-inspired chat UI to interact with models served by [Ollama](http
 | Optional API-KEY Auth | Drop-in API key protection with automatic requirement detection |
 | Local Models | Uses any model already pulled into your Ollama install |
 | Model Picker | Dynamic dropdown of locally available models |
+| Dictation | Optional microphone input transcribed by local audio-capable Ollama models |
 | Context | Sends last 3 messages each turn for coherent multi-turn dialogue |
 | Auto Titles | First user prompt triggers a lightweight title generation request |
 | History | Chats persisted in browser localStorage; reload and revisit anytime |
@@ -63,6 +64,9 @@ Choose any locally available Ollama model on the fly. The dropdown is populated 
 
 ![Model Selection](readme-media/anim-model-select.gif)
 
+### Dictation
+If a downloaded Ollama model advertises audio support, choose it from the separate transcription dropdown and use the microphone button to dictate into the prompt box. Press `Space` when the page is focused to start or stop dictation; if the prompt box already contains text, `Space` behaves normally. Enable `Auto-send Dictation` in the sidebar settings to send the transcript immediately after recording stops.
+
 ### Conversation Context
 Each new prompt sends the last three prior messages (user/assistant) to preserve short-term conversational grounding. This keeps responses relevant without heavy memory or manual summarization.
 
@@ -79,6 +83,7 @@ Every conversation is stored locally in your browser. Start a new chat to archiv
 - Deno 2.7+
 - Ollama installed and running (`ollama serve`)
 - At least one model pulled (for example `ollama pull llama2`)
+- For dictation: at least one pulled model with Ollama `audio` capability
 
 Install Ollama: https://ollama.ai/download
 
@@ -106,12 +111,14 @@ The frontend runtime is already vendored, so there is no package manager install
 ---
 
 ## Usage
-1. Select a model in the left sidebar.
+1. Select a chat model in the left sidebar.
 2. Type a prompt and send.
 3. First prompt also triggers an automatic title request.
-4. Click `New Chat` to archive the current conversation.
-5. Load any previous chat from the history list.
-6. Use the copy button in the top-right of assistant code blocks to copy snippets.
+4. If an audio-capable model is available, select it in the transcription dropdown and use the microphone button or `Space` hotkey to dictate.
+5. Enable `Auto-send Dictation` to submit transcribed speech immediately after recording stops.
+6. Click `New Chat` to archive the current conversation.
+7. Load any previous chat from the history list.
+8. Use the copy button in the top-right of assistant code blocks to copy snippets.
 
 ---
 
@@ -161,7 +168,8 @@ The test suite covers:
 - Index route and static HTML serving
 - Static module MIME types for vendored browser modules
 - Response endpoint validation and context handling
-- Models endpoint behavior
+- Models endpoint behavior, including transcription-capable model detection
+- Transcription endpoint validation and API key enforcement
 - API key authentication
 - Ollama error mapping
 - HTTP method restrictions
@@ -206,14 +214,45 @@ Send a prompt with optional short context (last 3 messages).
 ```
 
 ### GET /api/v1/models
-List models available locally.
+List models available locally, including capability metadata used by the transcription selector.
 
 **Response:**
 
 ```json
 {
   "models": ["llama2", "granite3.3:2b"],
+  "model_details": [
+    {"model": "llama2", "capabilities": ["completion"]},
+    {"model": "granite3.3:2b", "capabilities": ["completion", "audio"]}
+  ],
+  "transcription_models": ["granite3.3:2b"],
   "count": 2
+}
+```
+
+### POST /api/v1/transcribe
+Transcribe base64-encoded audio using a selected audio-capable Ollama model.
+
+**Request Headers:**
+- `Content-Type: application/json`
+- `X-API-Key: your-api-key` (required if `API_KEY` is set)
+
+**Request Body:**
+
+```json
+{
+  "model": "granite3.3:2b",
+  "audio": "base64-encoded-wav-data",
+  "format": "wav"
+}
+```
+
+**Response:**
+
+```json
+{
+  "transcription": "Transcribed speech",
+  "model": "granite3.3:2b"
 }
 ```
 
@@ -259,10 +298,14 @@ denollama/
 | Issue | Checks |
 |-------|--------|
 | Empty model list | `ollama list` - ensure models are pulled |
+| No audio models | Pull a model that reports `audio` capability in `ollama show <model>` |
 | Connection errors | Is `ollama serve` running? Is port 11434 reachable? |
 | Port conflict | Change with `PORT=7000 deno task dev` |
 | Module MIME type errors | Ensure the app is being served through the Deno server, not opened directly from disk |
 | Old frontend behavior | Hard refresh the browser after vendored asset changes |
+| Missing transcription endpoint | Restart `deno task dev` after backend route changes |
+| Microphone unavailable | Check browser microphone permissions and use a browser with `MediaRecorder` support |
+| First dictated word clipped | Wait for `Listening...` before speaking; the app adds a short audio pre-roll before transcription |
 
 ---
 
@@ -272,6 +315,7 @@ denollama/
 - [x] Delete chats from history
 - [x] Export chat as JSON/Markdown
 - [x] Optional system prompt injection
+- [x] Ollama-backed dictation
 - [ ] Frontend-specific tests
 - [ ] Markdown sanitization
 - [ ] Simple theming (dark/light toggle)
